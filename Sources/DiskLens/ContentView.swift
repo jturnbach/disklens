@@ -450,6 +450,13 @@ final class AppModel: ObservableObject {
         scanner.cancel()
     }
 
+    // Re-scan the root of the current scan (not the zoom target), picking
+    // up any on-disk changes and refreshing sizes and the treemap.
+    func rescan() {
+        guard let url = root?.url else { return }
+        startScan(url: url)
+    }
+
     func zoomIn(_ node: FileNode) {
         if node.isDirectory {
             zoomRoot = node
@@ -744,6 +751,11 @@ private struct Toolbar: View {
             }
             .disabled(model.isScanning)
 
+            ToolbarButton(title: "Refresh", systemImage: "arrow.clockwise") {
+                model.rescan()
+            }
+            .disabled(model.isScanning || model.root == nil)
+
             Divider().frame(height: 22)
 
             ToolbarButton(title: "Zoom Out", systemImage: "minus.magnifyingglass") {
@@ -798,6 +810,39 @@ private struct Toolbar: View {
     }
 }
 
+// Shared "chip" pill style used for every toolbar control. Both
+// ToolbarButton (regular Button) and ScanMenu (Menu wrapper) render their
+// label through this modifier so the two control flavors are guaranteed
+// pixel-identical.
+struct ToolbarChip: ViewModifier {
+    var highlighted: Bool = false
+
+    func body(content: Content) -> some View {
+        content
+            .padding(.horizontal, 10)
+            .padding(.vertical, 6)
+            .background(
+                RoundedRectangle(cornerRadius: 7)
+                    .fill(highlighted
+                          ? Color.accentColor.opacity(0.18)
+                          : Color(nsColor: .controlBackgroundColor))
+            )
+            .overlay(
+                RoundedRectangle(cornerRadius: 7)
+                    .strokeBorder(highlighted
+                                  ? Color.accentColor.opacity(0.6)
+                                  : Color.primary.opacity(0.08),
+                                  lineWidth: highlighted ? 1 : 0.5)
+            )
+    }
+}
+
+extension View {
+    func toolbarChip(highlighted: Bool = false) -> some View {
+        self.modifier(ToolbarChip(highlighted: highlighted))
+    }
+}
+
 private struct ToolbarButton: View {
     let title: String
     let systemImage: String
@@ -814,21 +859,7 @@ private struct ToolbarButton: View {
                 Text(title)
                     .font(.system(size: 12, weight: .medium))
             }
-            .padding(.horizontal, 10)
-            .padding(.vertical, 6)
-            .background(
-                RoundedRectangle(cornerRadius: 7)
-                    .fill(highlighted
-                          ? Color.accentColor.opacity(0.18)
-                          : Color(nsColor: .controlBackgroundColor))
-            )
-            .overlay(
-                RoundedRectangle(cornerRadius: 7)
-                    .strokeBorder(highlighted
-                                  ? Color.accentColor.opacity(0.6)
-                                  : Color.primary.opacity(0.08),
-                                  lineWidth: highlighted ? 1 : 0.5)
-            )
+            .toolbarChip(highlighted: highlighted)
         }
         .buttonStyle(.plain)
     }
@@ -953,16 +984,7 @@ private struct ScanMenu: View {
                     .font(.system(size: 9, weight: .semibold))
                     .foregroundStyle(.secondary)
             }
-            .padding(.horizontal, 10)
-            .padding(.vertical, 6)
-            .background(
-                RoundedRectangle(cornerRadius: 7)
-                    .fill(Color(nsColor: .controlBackgroundColor))
-            )
-            .overlay(
-                RoundedRectangle(cornerRadius: 7)
-                    .strokeBorder(Color.primary.opacity(0.08), lineWidth: 0.5)
-            )
+            .toolbarChip()
         }
         .menuStyle(.borderlessButton)
         .menuIndicator(.hidden)

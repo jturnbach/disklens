@@ -82,7 +82,7 @@ struct SidePane: View {
     // MARK: - Summary card with stacked bar
 
     private var summaryCard: some View {
-        let usedSegments = model.legend.map { (cat, bytes) in
+        var usedSegments = model.legend.map { (cat, bytes) in
             StackedUsageBar.Segment(
                 name: cat.displayName,
                 color: cat.color,
@@ -91,14 +91,31 @@ struct SidePane: View {
         let scannedBytes = model.root?.totalSize ?? 0
         let total: Int64
         let freeBytes: Int64
+        var unscannedBytes: Int64 = 0
         let titleSubtitle: (String, String)
+        let unscannedColor = Color(red: 0.45, green: 0.45, blue: 0.50)
 
         if model.scanRootIsVolume && model.volumeTotalBytes > 0 {
             total = model.volumeTotalBytes
             freeBytes = model.volumeFreeBytes
+            // The scanner can't see everything on the volume: APFS
+            // snapshots, TCC-protected paths we lack access to, system
+            // data, time-machine local snapshots, etc. Bridge the gap
+            // between `scanned` and the OS-reported `used` with an
+            // "Unscanned" segment so the visual proportions match what
+            // the user sees in About This Mac — otherwise the free-space
+            // tail swallows the unscanned bytes and looks huge.
+            let reportedUsed = model.volumeTotalBytes - model.volumeFreeBytes
+            unscannedBytes = max(0, reportedUsed - scannedBytes)
+            if unscannedBytes > 0 {
+                usedSegments.append(StackedUsageBar.Segment(
+                    name: "Unscanned",
+                    color: unscannedColor,
+                    bytes: unscannedBytes))
+            }
             titleSubtitle = (
                 model.volumeName ?? model.root?.name ?? "Volume",
-                "\(ByteFormatter.string(model.volumeTotalBytes - model.volumeFreeBytes)) used of \(ByteFormatter.string(model.volumeTotalBytes))"
+                "\(ByteFormatter.string(reportedUsed)) used of \(ByteFormatter.string(model.volumeTotalBytes))"
             )
         } else {
             total = scannedBytes
@@ -148,6 +165,13 @@ struct SidePane: View {
             ) {
                 ForEach(model.legend, id: \.0) { (cat, bytes) in
                     legendDot(cat: cat, bytes: bytes, total: total)
+                }
+                if unscannedBytes > 0 {
+                    legendDotRaw(
+                        color: unscannedColor,
+                        title: "Unscanned",
+                        bytes: unscannedBytes,
+                        total: total)
                 }
                 if freeBytes > 0 {
                     legendDotRaw(
