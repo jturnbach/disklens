@@ -136,6 +136,9 @@ struct SuggestionCardView: View {
                     Text("Failed: \(msg)")
                         .font(.system(size: 10, weight: .medium))
                         .foregroundStyle(.red)
+                    if canRetryAsAdmin(sug) {
+                        failedActionRow(sug)
+                    }
                 }
                 if sug.status == .pending {
                     actionRow(sug)
@@ -264,5 +267,46 @@ struct SuggestionCardView: View {
     private func displayName(for sug: CleanupSuggestion) -> String {
         let p = sug.nodeRef?.path ?? sug.path
         return (p as NSString).lastPathComponent
+    }
+
+    // Only offer admin retry when the failure looks like a permission
+    // issue and the node is still in the scan.
+    private func canRetryAsAdmin(_ sug: CleanupSuggestion) -> Bool {
+        guard case .failed(let msg) = sug.status else { return false }
+        guard sug.isResolved else { return false }
+        let lowered = msg.lowercased()
+        return lowered.contains("permission")
+            || lowered.contains("administrator")
+            || lowered.contains("not permitted")
+            || lowered.contains("privilege")
+            || lowered.contains("access")
+    }
+
+    @ViewBuilder
+    private func failedActionRow(_ sug: CleanupSuggestion) -> some View {
+        HStack(spacing: 6) {
+            Button {
+                model.skipSuggestion(messageID: messageID,
+                                     suggestionID: sug.id)
+            } label: {
+                Text("Dismiss")
+                    .font(.system(size: 11, weight: .medium))
+            }
+            .buttonStyle(.bordered)
+            .controlSize(.small)
+
+            Button {
+                model.trashSuggestionAsAdmin(messageID: messageID,
+                                              suggestionID: sug.id)
+            } label: {
+                Label("Retry as Admin", systemImage: "lock.fill")
+                    .font(.system(size: 11, weight: .semibold))
+            }
+            .buttonStyle(.borderedProminent)
+            .tint(.orange)
+            .controlSize(.small)
+            .help("Prompt for your admin password and retry with elevated privileges")
+        }
+        .padding(.top, 4)
     }
 }

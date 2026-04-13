@@ -22,7 +22,12 @@ final class ChatWindowHost: NSObject, NSWindowDelegate {
         let host = ChatWindowHost()
         host.model = model
 
-        let chatView = AIChatView().environmentObject(model)
+        // Match the main window's dark theme. preferredColorScheme on the
+        // hosted SwiftUI view handles system colors; setting NSWindow's
+        // appearance covers the title bar chrome and window background.
+        let chatView = AIChatView()
+            .environmentObject(model)
+            .preferredColorScheme(.dark)
         let hosting = NSHostingView(rootView: chatView)
         hosting.autoresizingMask = [.width, .height]
 
@@ -37,6 +42,8 @@ final class ChatWindowHost: NSObject, NSWindowDelegate {
         window.titlebarAppearsTransparent = true
         window.isReleasedWhenClosed = false
         window.minSize = NSSize(width: 380, height: 480)
+        window.appearance = NSAppearance(named: .darkAqua)
+        window.backgroundColor = NSColor.windowBackgroundColor
         window.contentView = hosting
         window.center()
         window.delegate = host

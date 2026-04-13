@@ -186,12 +186,6 @@ final class AppModel: ObservableObject {
             aiMessages[loc.msgIdx].suggestions[loc.sugIdx] = sug
             return
         }
-        if !FileManager.default.isDeletableFile(atPath: node.url.path) {
-            sug.status = .failed("This file isn't deletable — it may be owned by another user, locked, or on a read-only volume.")
-            aiMessages[loc.msgIdx].suggestions[loc.sugIdx] = sug
-            return
-        }
-
         do {
             var trashed: NSURL? = nil
             try FileManager.default.trashItem(at: node.url, resultingItemURL: &trashed)
@@ -203,29 +197,51 @@ final class AppModel: ObservableObject {
         aiMessages[loc.msgIdx].suggestions[loc.sugIdx] = sug
     }
 
-    // Known system roots that DiskLens has no chance of writing to. Used
-    // both as a preflight and to craft better error messages.
+    // Retry a failed deletion with administrator privileges via osascript.
+    // Shows the standard macOS admin password prompt; if accepted, moves
+    // the file to ~/.Trash (so it's still recoverable) with `sudo mv`.
+    func trashSuggestionAsAdmin(messageID: UUID, suggestionID: UUID) {
+        guard let loc = findSuggestion(messageID: messageID, suggestionID: suggestionID) else { return }
+        var sug = aiMessages[loc.msgIdx].suggestions[loc.sugIdx]
+        guard let ref = sug.nodeRef,
+              let node = pathIndex[ref.path] else {
+            sug.status = .failed("Not in current scan")
+            aiMessages[loc.msgIdx].suggestions[loc.sugIdx] = sug
+            return
+        }
+
+        let path = node.url.path
+        let result = AdminElevation.moveToUserTrash(path: path,
+                                                     reason: "delete system-protected file")
+
+        switch result {
+        case .success:
+            removeNodeFromTree(node)
+            sug.status = .deleted
+        case .cancelled:
+            sug.status = .failed("Cancelled admin authorization")
+        case .failure(let msg):
+            sug.status = .failed("Admin delete failed: \(msg)")
+        }
+        aiMessages[loc.msgIdx].suggestions[loc.sugIdx] = sug
+    }
+
+    // Only the truly untouchable prefixes are rejected preflight. Other
+    // protected locations (e.g. /Library/Application Support) fall through
+    // to trashItem and, on permission failure, get offered the admin-retry
+    // path.
     private func protectedPathReason(_ path: String) -> String? {
-        let protectedPrefixes: [(String, String)] = [
-            ("/System/",     "Protected by macOS System Integrity Protection (SIP)"),
-            ("/private/",    "Protected system path — not user-deletable"),
-            ("/usr/",        "Protected system path — not user-deletable"),
-            ("/bin/",        "Protected system path — not user-deletable"),
-            ("/sbin/",       "Protected system path — not user-deletable"),
-            ("/opt/",        "Protected system path — not user-deletable"),
+        let hardBlocks: [(String, String)] = [
+            ("/System/",      "Protected by macOS System Integrity Protection"),
+            ("/private/var/vm/", "Active swap / VM file — macOS manages this automatically"),
+            ("/bin/",         "Protected system path"),
+            ("/sbin/",        "Protected system path"),
+            ("/usr/bin/",     "Protected system path"),
+            ("/usr/sbin/",    "Protected system path"),
+            ("/usr/libexec/", "Protected system path"),
         ]
-        for (prefix, reason) in protectedPrefixes {
+        for (prefix, reason) in hardBlocks {
             if path.hasPrefix(prefix) { return reason }
-        }
-        // Top-level /Library is system-wide. User library lives at ~/Library.
-        if path.hasPrefix("/Library/") {
-            return "System-wide /Library — requires administrator privileges"
-        }
-        // /Applications is system-owned. User apps under ~/Applications are fine.
-        if path == "/Applications" || path.hasPrefix("/Applications/") {
-            // Allow the admin-installed apps to be trashed only via Finder,
-            // not by us.
-            return "Applications folder — use Finder to move apps to Trash"
         }
         return nil
     }
