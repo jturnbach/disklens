@@ -12,19 +12,27 @@ enum AdminElevation {
         case failure(String)
     }
 
-    // Moves a file or directory into the current user's ~/.Trash via
-    // `sudo mv`, wrapped in an AppleScript "do shell script ... with
-    // administrator privileges" invocation. Uses mv rather than rm so the
-    // user can recover from Trash if they change their mind.
+    // Deletes a file or directory under administrator privileges. Tries
+    // three strategies in one shell script so the user only sees a single
+    // password prompt:
+    //
+    //   1. /bin/mv SRC ~/.Trash/NAME     (recoverable from Trash)
+    //   2. /usr/bin/chflags -R noschg    (clear immutable flags if present)
+    //      /bin/rm -rf SRC               (force destructive delete)
+    //
+    // mv alone fails on cross-volume moves, files with schg / uchg flags
+    // (common under /Library/Developer/CoreSimulator), and some
+    // root-owned APFS inodes. The rm fallback handles those — destructive,
+    // but the user explicitly asked to delete and is typing their admin
+    // password to confirm.
     static func moveToUserTrash(path: String, reason: String) -> Result {
         guard let home = ProcessInfo.processInfo.environment["HOME"]
             ?? NSHomeDirectoryForUser(NSUserName()) else {
             return .failure("Could not locate home directory")
         }
         let trashDir = (home as NSString).appendingPathComponent(".Trash")
-        // Ensure the target filename doesn't clash with an existing entry
-        // in Trash — AppKit's normal trashItem appends "N" automatically,
-        // but /bin/mv would overwrite. Append a timestamp if needed.
+        // Avoid clashing with an existing entry in Trash — AppKit's trash
+        // APIs append "N" automatically, but /bin/mv would overwrite.
         let fm = FileManager.default
         let lastComponent = (path as NSString).lastPathComponent
         var dest = (trashDir as NSString).appendingPathComponent(lastComponent)
@@ -34,7 +42,15 @@ enum AdminElevation {
                 "\(lastComponent).\(stamp)")
         }
 
-        let shellCmd = "/bin/mv \(shellQuote(path)) \(shellQuote(dest))"
+        let src = shellQuote(path)
+        let dst = shellQuote(dest)
+        // Try mv; if that fails (non-zero exit) run chflags + rm as a
+        // fallback. Stderr from mv is suppressed so a successful fallback
+        // isn't reported as a failure.
+        let shellCmd = """
+        /bin/mv \(src) \(dst) 2>/dev/null \
+        || { /usr/bin/chflags -R noschg \(src) 2>/dev/null; /bin/rm -rf \(src); }
+        """
         let script = """
         do shell script "\(appleScriptEscape(shellCmd))" \
         with prompt "DiskLens needs your password to \(appleScriptEscape(reason))." \

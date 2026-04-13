@@ -105,7 +105,20 @@ enum SuggestionParser {
         } else {
             return []
         }
-        return dtos.map { dto in
+        let personalFolders = protectedPersonalFolders()
+        return dtos.compactMap { dto in
+            let resolvedPath = pathIndex[dto.path]?.url.path
+                ?? pathIndex[normalize(dto.path)]?.url.path
+                ?? normalize(dto.path)
+
+            // Hard client-side drop: if the AI ignored the rule and
+            // suggested a whole personal folder, silently remove it. The
+            // prose in the message still stands and the user sees nothing
+            // actionable for that folder — which is the point.
+            if personalFolders.contains(resolvedPath) {
+                return nil
+            }
+
             let conf: CleanupSuggestion.Confidence = {
                 switch (dto.confidence ?? "").lowercased() {
                 case "safe":                       return .safe
@@ -128,6 +141,27 @@ enum SuggestionParser {
                 confidence: conf,
                 nodeRef: ref)
         }
+    }
+
+    // Absolute paths that the AI must never suggest as a whole-folder
+    // delete. Resolved from the current user's home directory so they
+    // match exactly against the node path the AI emits.
+    private static func protectedPersonalFolders() -> Set<String> {
+        let home = NSHomeDirectory()
+        let names = [
+            "Downloads", "Documents", "Desktop",
+            "Movies", "Music", "Pictures",
+            "Library",
+            "Library/Mobile Documents",
+        ]
+        var out = Set<String>()
+        for n in names {
+            let full = (home as NSString).appendingPathComponent(n)
+            out.insert(full)
+            // Also include the trailing-slash variant just in case.
+            out.insert(full + "/")
+        }
+        return out
     }
 
     // Small normalization: expand leading ~ and strip trailing slashes so
