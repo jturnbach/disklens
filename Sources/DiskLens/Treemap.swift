@@ -159,8 +159,10 @@ enum SquarifiedTreemap {
     }
 }
 
-// Cushion-shaded treemap renderer. Uses SwiftUI Canvas so drawing of thousands
-// of rectangles stays cheap, plus a hit-test index for click routing.
+// The TreemapView now renders the treemap to a CGImage via TreemapRenderer
+// and hands that image to a CALayer-backed NSView. During live window
+// resize the CALayer stretches the cached pixels on the GPU — SwiftUI
+// does zero drawing per frame.
 struct TreemapView: View {
     let root: FileNode?
     @Binding var selectedNodes: [FileNode]
@@ -169,105 +171,32 @@ struct TreemapView: View {
     unowned let model: AppModel
     var onDoubleClick: (FileNode) -> Void
 
+    @StateObject private var renderer = TreemapRenderer()
     @State private var hovered: FileNode? = nil
-
-    // Layout cache. We recompute the squarified layout only when the tree
-    // (or the zoom root, or a mutation) changes — NOT on every window resize
-    // frame. During live resize we render the cached rects scaled to match
-    // the current bounds, and schedule a relayout 120 ms after the last size
-    // change so the layout snaps crisp once the user stops dragging.
-    @State private var cachedRects: [TreemapRect] = []
-    @State private var cachedLayoutSize: CGSize = .zero
-    @State private var cachedRootRef: ObjectIdentifier? = nil
-    @State private var cachedMutationToken: Int = -1
-    @State private var resizeDebounce: DispatchWorkItem? = nil
 
     var body: some View {
         GeometryReader { geo in
             let displayRoot = zoomRoot ?? root
-            let currentSize = geo.size
-
-            // Hit-test rects scaled into the current bounds. Cheap, O(n)
-            // once per frame. The Canvas itself is NOT rescaled — we draw it
-            // at `cachedLayoutSize` and use a GPU `scaleEffect` transform to
-            // stretch the flattened drawing group to the visible bounds.
-            let rects = scaledRects(cachedRects,
-                                    from: cachedLayoutSize,
-                                    to: currentSize)
-            let scaleX = cachedLayoutSize.width > 0
-                ? currentSize.width / cachedLayoutSize.width
-                : 1
-            let scaleY = cachedLayoutSize.height > 0
-                ? currentSize.height / cachedLayoutSize.height
-                : 1
-
-            // Highlight the union of every selected node's subtree (or the
-            // node itself if a file). Walking parents per tile would be
-            // O(rects×depth); a precomputed set is O(rects) per render.
-            let highlightSet: Set<ObjectIdentifier> = {
-                let dirs = selectedNodes.filter { $0.isDirectory }
-                let files = selectedNodes.filter { !$0.isDirectory }
-                if dirs.isEmpty && files.isEmpty { return [] }
-                var s = Set<ObjectIdentifier>()
-                for f in files { s.insert(ObjectIdentifier(f)) }
-                var stack: [FileNode] = dirs
-                while let n = stack.popLast() {
-                    s.insert(ObjectIdentifier(n))
-                    if n.isDirectory { stack.append(contentsOf: n.children) }
-                }
-                return s
-            }()
-            // Only dim if the highlight covers a strict subset — i.e. when
-            // at least one directory is selected. Pure file selections
-            // shouldn't dim everything else, since users still want to see
-            // surrounding context when clicking a single tile.
-            let dimMode = selectedNodes.contains { $0.isDirectory }
 
             ZStack(alignment: .topLeading) {
-                // Base cushion layer: drawn at cachedLayoutSize and then
-                // stretched via .scaleEffect. The Canvas closure only
-                // re-runs when the cached layout (or selection / dim mode)
-                // changes — not on every resize frame.
-                Canvas(rendersAsynchronously: false) { ctx, size in
-                    ctx.fill(Path(CGRect(origin: .zero, size: size)),
-                             with: .color(Color(red: 0.08, green: 0.08, blue: 0.10)))
+                // Base treemap bitmap. Scales natively via CALayer; no
+                // SwiftUI redraws on resize.
+                TreemapLayerView(image: renderer.image)
+                    .allowsHitTesting(false)
 
-                    for tr in cachedRects {
-                        let inHighlight = !dimMode
-                            || highlightSet.contains(ObjectIdentifier(tr.node))
-                        drawCushion(ctx: &ctx, tr: tr, dimmed: !inHighlight)
-                    }
+                // Lightweight selection + dim overlay. Only touches the
+                // selected subset — cheap.
+                SelectionOverlay(selectedNodes: selectedNodes,
+                                 cachedRects: renderer.cachedRects,
+                                 cachedLayoutSize: renderer.cachedLayoutSize,
+                                 currentSize: geo.size)
+                    .allowsHitTesting(false)
 
-                    let selectedIds = Set(selectedNodes.map { ObjectIdentifier($0) })
-                    for sel in selectedNodes where sel.isDirectory {
-                        let descIds = subtreeIds(of: sel)
-                        var box: CGRect? = nil
-                        for tr in cachedRects where descIds.contains(ObjectIdentifier(tr.node)) {
-                            box = box?.union(tr.rect) ?? tr.rect
-                        }
-                        if let b = box {
-                            let path = Path(roundedRect: b.insetBy(dx: 0.5, dy: 0.5),
-                                            cornerRadius: 1)
-                            ctx.stroke(path, with: .color(.black), lineWidth: 3)
-                            ctx.stroke(path, with: .color(.white), lineWidth: 1.5)
-                        }
-                    }
-                    for tr in cachedRects where !tr.node.isDirectory
-                        && selectedIds.contains(ObjectIdentifier(tr.node)) {
-                        let path = Path(roundedRect: tr.rect.insetBy(dx: 0.5, dy: 0.5),
-                                        cornerRadius: 1)
-                        ctx.stroke(path, with: .color(.white), lineWidth: 2)
-                        ctx.stroke(path, with: .color(.black), lineWidth: 0.5)
-                    }
-                }
-                .frame(width: max(cachedLayoutSize.width, 1),
-                       height: max(cachedLayoutSize.height, 1))
-                .drawingGroup()
-                .scaleEffect(x: scaleX, y: scaleY, anchor: .topLeading)
-                .allowsHitTesting(false)
-
-                // Invisible hit layer: route clicks without re-laying out.
-                HitLayer(rects: rects,
+                // Hit layer. Scales click coordinates lazily — zero
+                // allocations per resize frame.
+                HitLayer(rects: renderer.cachedRects,
+                         logicalSize: renderer.cachedLayoutSize,
+                         currentSize: geo.size,
                          model: model,
                          onClick: { node, mods in
                              if mods.contains(.command) || mods.contains(.shift) {
@@ -300,24 +229,28 @@ struct TreemapView: View {
                 }
             }
             .onAppear {
-                requestRelayoutIfNeeded(size: currentSize,
-                                         root: displayRoot,
-                                         token: mutationToken)
+                renderer.requestLayout(root: displayRoot,
+                                       size: geo.size,
+                                       mutationToken: mutationToken,
+                                       immediate: true)
             }
-            .onChange(of: currentSize) { newSize in
-                requestRelayoutIfNeeded(size: newSize,
-                                         root: displayRoot,
-                                         token: mutationToken)
+            .onChange(of: geo.size) { newSize in
+                renderer.requestLayout(root: displayRoot,
+                                       size: newSize,
+                                       mutationToken: mutationToken,
+                                       immediate: false)
             }
             .onChange(of: mutationToken) { newToken in
-                requestRelayoutIfNeeded(size: currentSize,
-                                         root: displayRoot,
-                                         token: newToken)
+                renderer.requestLayout(root: displayRoot,
+                                       size: geo.size,
+                                       mutationToken: newToken,
+                                       immediate: true)
             }
             .onChange(of: displayRoot.map { ObjectIdentifier($0) }) { _ in
-                requestRelayoutIfNeeded(size: currentSize,
-                                         root: displayRoot,
-                                         token: mutationToken)
+                renderer.requestLayout(root: displayRoot,
+                                       size: geo.size,
+                                       mutationToken: mutationToken,
+                                       immediate: true)
             }
         }
     }
@@ -325,75 +258,94 @@ struct TreemapView: View {
     private func tooltipText(_ n: FileNode) -> String {
         "\(n.name)  ·  \(ByteFormatter.string(n.totalSize))"
     }
+}
 
-    // MARK: - Layout cache + debounce
+// Dim + selection-outline overlay. Walks only the selected nodes' subtree
+// once to compute a bounding box per selected directory, then draws in a
+// SwiftUI Canvas scaled to current bounds. Handful of shapes — fast.
+private struct SelectionOverlay: View {
+    let selectedNodes: [FileNode]
+    let cachedRects: [TreemapRect]
+    let cachedLayoutSize: CGSize
+    let currentSize: CGSize
 
-    // Cheap rescale of cached rects into a new bounding box. Used during
-    // live resize while the squarified layout is deliberately not recomputed.
-    private func scaledRects(_ source: [TreemapRect],
-                             from oldSize: CGSize,
-                             to newSize: CGSize) -> [TreemapRect] {
-        guard oldSize.width > 0, oldSize.height > 0 else { return source }
-        if abs(oldSize.width - newSize.width) < 0.5
-            && abs(oldSize.height - newSize.height) < 0.5 {
-            return source
-        }
-        let sx = newSize.width / oldSize.width
-        let sy = newSize.height / oldSize.height
-        return source.map { tr in
-            TreemapRect(
-                rect: CGRect(x: tr.rect.minX * sx,
-                             y: tr.rect.minY * sy,
-                             width: tr.rect.width * sx,
-                             height: tr.rect.height * sy),
-                node: tr.node,
-                depth: tr.depth)
+    var body: some View {
+        if selectedNodes.isEmpty
+            || cachedLayoutSize.width < 1
+            || cachedLayoutSize.height < 1 {
+            Color.clear
+        } else {
+            Canvas { ctx, size in
+                let sx = size.width / cachedLayoutSize.width
+                let sy = size.height / cachedLayoutSize.height
+                let highlightBoxes = dirBoundingBoxes(scaleX: sx, scaleY: sy)
+                let fileTileRects = fileSelectionRects(scaleX: sx, scaleY: sy)
+
+                // Dim the non-highlighted area with an even-odd punched
+                // path — single fill, no iteration over all tiles.
+                if !highlightBoxes.isEmpty {
+                    var dim = Path()
+                    dim.addRect(CGRect(origin: .zero, size: size))
+                    for b in highlightBoxes { dim.addRect(b) }
+                    ctx.fill(dim,
+                             with: .color(Color.black.opacity(0.55)),
+                             style: FillStyle(eoFill: true))
+                }
+
+                // Bright outline around each selected directory box.
+                for b in highlightBoxes {
+                    let path = Path(roundedRect: b.insetBy(dx: 0.5, dy: 0.5),
+                                    cornerRadius: 1)
+                    ctx.stroke(path, with: .color(.black), lineWidth: 3)
+                    ctx.stroke(path, with: .color(.white), lineWidth: 1.5)
+                }
+
+                // Per-file outline for file selections.
+                for r in fileTileRects {
+                    let path = Path(roundedRect: r.insetBy(dx: 0.5, dy: 0.5),
+                                    cornerRadius: 1)
+                    ctx.stroke(path, with: .color(.white), lineWidth: 2)
+                    ctx.stroke(path, with: .color(.black), lineWidth: 0.5)
+                }
+            }
         }
     }
 
-    // Trigger a fresh squarified layout on the next runloop tick, without
-    // mutating @State inside a body evaluation (which SwiftUI warns about).
-    private func requestRelayoutIfNeeded(size: CGSize,
-                                          root: FileNode?,
-                                          token: Int) {
-        let rootRef = root.map { ObjectIdentifier($0) }
-        let needsImmediate = cachedRootRef != rootRef
-            || cachedMutationToken != token
-            || cachedRects.isEmpty
-        let needsResize = cachedLayoutSize != size
-
-        if needsImmediate {
-            DispatchQueue.main.async {
-                self.doLayout(size: size, root: root, token: token)
+    // Union of all descendant rects for each selected directory, already
+    // scaled to current bounds.
+    private func dirBoundingBoxes(scaleX: CGFloat,
+                                   scaleY: CGFloat) -> [CGRect] {
+        var out: [CGRect] = []
+        for dir in selectedNodes where dir.isDirectory {
+            let descIds = subtreeIds(of: dir)
+            var box: CGRect? = nil
+            for tr in cachedRects where descIds.contains(ObjectIdentifier(tr.node)) {
+                box = box?.union(tr.rect) ?? tr.rect
             }
-        } else if needsResize {
-            // Debounce: cancel any pending work, schedule new layout 120 ms
-            // after the most recent size change.
-            resizeDebounce?.cancel()
-            let work = DispatchWorkItem {
-                self.doLayout(size: size, root: root, token: token)
+            if let b = box {
+                out.append(CGRect(x: b.minX * scaleX,
+                                  y: b.minY * scaleY,
+                                  width: b.width * scaleX,
+                                  height: b.height * scaleY))
             }
-            resizeDebounce = work
-            DispatchQueue.main.asyncAfter(deadline: .now() + 1.0,
-                                           execute: work)
         }
+        return out
     }
 
-    private func doLayout(size: CGSize, root: FileNode?, token: Int) {
-        guard size.width > 1, size.height > 1 else { return }
-        guard let root = root else {
-            cachedRects = []
-            cachedLayoutSize = size
-            cachedRootRef = nil
-            cachedMutationToken = token
-            return
-        }
-        let bounds = CGRect(origin: .zero, size: size)
-        let rects = SquarifiedTreemap.layout(root: root, in: bounds)
-        cachedRects = rects
-        cachedLayoutSize = size
-        cachedRootRef = ObjectIdentifier(root)
-        cachedMutationToken = token
+    private func fileSelectionRects(scaleX: CGFloat,
+                                     scaleY: CGFloat) -> [CGRect] {
+        let ids = Set(selectedNodes
+            .filter { !$0.isDirectory }
+            .map { ObjectIdentifier($0) })
+        guard !ids.isEmpty else { return [] }
+        return cachedRects
+            .filter { !$0.node.isDirectory && ids.contains(ObjectIdentifier($0.node)) }
+            .map {
+                CGRect(x: $0.rect.minX * scaleX,
+                       y: $0.rect.minY * scaleY,
+                       width: $0.rect.width * scaleX,
+                       height: $0.rect.height * scaleY)
+            }
     }
 
     private func subtreeIds(of node: FileNode) -> Set<ObjectIdentifier> {
@@ -405,63 +357,14 @@ struct TreemapView: View {
         }
         return s
     }
-
-    // Cushion shading: base color + linear highlight top-left + shadow
-    // bottom-right + thin border. Produces the pillowed look without per-pixel
-    // math, which would be ruinous for tens of thousands of rects.
-    private func drawCushion(ctx: inout GraphicsContext,
-                             tr: TreemapRect,
-                             dimmed: Bool = false) {
-        let rect = tr.rect
-        if rect.width < 1 || rect.height < 1 { return }
-
-        let cat = FileTypeClassifier.category(for: tr.node)
-        let base = dimmed
-            ? cat.color.opacity(0.18)
-            : cat.color
-        let path = Path(rect)
-
-        // Base fill.
-        ctx.fill(path, with: .color(base))
-
-        // Large-enough tiles get cushion shading; skip for tiny ones.
-        if rect.width > 3 && rect.height > 3 {
-            let hiAlpha = dimmed ? 0.10 : 0.55
-            let hiMidAlpha = dimmed ? 0.02 : 0.08
-            let shadowMid = dimmed ? 0.04 : 0.10
-            let shadowMax = dimmed ? 0.18 : 0.45
-
-            ctx.fill(path, with: .linearGradient(
-                Gradient(colors: [
-                    Color.white.opacity(hiAlpha),
-                    Color.white.opacity(hiMidAlpha),
-                    Color.clear
-                ]),
-                startPoint: CGPoint(x: rect.minX, y: rect.minY),
-                endPoint: CGPoint(x: rect.minX + rect.width * 0.55,
-                                  y: rect.minY + rect.height * 0.55)))
-
-            ctx.fill(path, with: .linearGradient(
-                Gradient(colors: [
-                    Color.clear,
-                    Color.black.opacity(shadowMid),
-                    Color.black.opacity(shadowMax)
-                ]),
-                startPoint: CGPoint(x: rect.minX + rect.width * 0.45,
-                                    y: rect.minY + rect.height * 0.45),
-                endPoint: CGPoint(x: rect.maxX, y: rect.maxY)))
-
-            ctx.stroke(path,
-                       with: .color(Color.black.opacity(dimmed ? 0.25 : 0.55)),
-                       lineWidth: 0.5)
-        }
-    }
 }
 
 // Transparent NSView that handles mouse events. SwiftUI's onTapGesture is
 // per-shape, which would be catastrophic for huge treemaps.
 struct HitLayer: NSViewRepresentable {
     let rects: [TreemapRect]
+    let logicalSize: CGSize
+    let currentSize: CGSize
     unowned let model: AppModel
     let onClick: (FileNode, NSEvent.ModifierFlags) -> Void
     let onDoubleClick: (FileNode) -> Void
@@ -470,6 +373,8 @@ struct HitLayer: NSViewRepresentable {
     func makeNSView(context: Context) -> HitNSView {
         let v = HitNSView()
         v.rects = rects
+        v.logicalSize = logicalSize
+        v.currentSize = currentSize
         v.model = model
         v.onClick = onClick
         v.onDoubleClick = onDoubleClick
@@ -479,6 +384,8 @@ struct HitLayer: NSViewRepresentable {
 
     func updateNSView(_ view: HitNSView, context: Context) {
         view.rects = rects
+        view.logicalSize = logicalSize
+        view.currentSize = currentSize
         view.model = model
         view.onClick = onClick
         view.onDoubleClick = onDoubleClick
@@ -489,6 +396,8 @@ struct HitLayer: NSViewRepresentable {
 import AppKit
 final class HitNSView: NSView {
     var rects: [TreemapRect] = []
+    var logicalSize: CGSize = .zero
+    var currentSize: CGSize = .zero
     weak var model: AppModel?
     var onClick: ((FileNode, NSEvent.ModifierFlags) -> Void)?
     var onDoubleClick: ((FileNode) -> Void)?
@@ -514,9 +423,17 @@ final class HitNSView: NSView {
     }
 
     private func nodeAt(_ p: NSPoint) -> FileNode? {
+        // Convert from the live view's coordinate space into the cached
+        // layout's coordinate space (which is where `rects` live). Scale
+        // lazily per click so resize frames do zero per-tile work.
+        guard logicalSize.width > 0, logicalSize.height > 0,
+              bounds.width > 0, bounds.height > 0 else { return nil }
+        let sx = logicalSize.width / bounds.width
+        let sy = logicalSize.height / bounds.height
+        let q = NSPoint(x: p.x * sx, y: p.y * sy)
         // Scan in reverse so nested (smaller) rects win over ancestors.
         for tr in rects.reversed() {
-            if tr.rect.contains(p) { return tr.node }
+            if tr.rect.contains(q) { return tr.node }
         }
         return nil
     }

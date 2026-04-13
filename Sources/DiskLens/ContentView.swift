@@ -178,15 +178,88 @@ final class AppModel: ObservableObject {
             aiMessages[loc.msgIdx].suggestions[loc.sugIdx] = sug
             return
         }
+
+        // Preflight: reject obviously system-protected paths before even
+        // hitting the file system, so the failure message is useful.
+        if let reason = protectedPathReason(node.url.path) {
+            sug.status = .failed(reason)
+            aiMessages[loc.msgIdx].suggestions[loc.sugIdx] = sug
+            return
+        }
+        if !FileManager.default.isDeletableFile(atPath: node.url.path) {
+            sug.status = .failed("This file isn't deletable — it may be owned by another user, locked, or on a read-only volume.")
+            aiMessages[loc.msgIdx].suggestions[loc.sugIdx] = sug
+            return
+        }
+
         do {
             var trashed: NSURL? = nil
             try FileManager.default.trashItem(at: node.url, resultingItemURL: &trashed)
             removeNodeFromTree(node)
             sug.status = .deleted
         } catch {
-            sug.status = .failed(error.localizedDescription)
+            sug.status = .failed(friendlyTrashError(error, path: node.url.path))
         }
         aiMessages[loc.msgIdx].suggestions[loc.sugIdx] = sug
+    }
+
+    // Known system roots that DiskLens has no chance of writing to. Used
+    // both as a preflight and to craft better error messages.
+    private func protectedPathReason(_ path: String) -> String? {
+        let protectedPrefixes: [(String, String)] = [
+            ("/System/",     "Protected by macOS System Integrity Protection (SIP)"),
+            ("/private/",    "Protected system path — not user-deletable"),
+            ("/usr/",        "Protected system path — not user-deletable"),
+            ("/bin/",        "Protected system path — not user-deletable"),
+            ("/sbin/",       "Protected system path — not user-deletable"),
+            ("/opt/",        "Protected system path — not user-deletable"),
+        ]
+        for (prefix, reason) in protectedPrefixes {
+            if path.hasPrefix(prefix) { return reason }
+        }
+        // Top-level /Library is system-wide. User library lives at ~/Library.
+        if path.hasPrefix("/Library/") {
+            return "System-wide /Library — requires administrator privileges"
+        }
+        // /Applications is system-owned. User apps under ~/Applications are fine.
+        if path == "/Applications" || path.hasPrefix("/Applications/") {
+            // Allow the admin-installed apps to be trashed only via Finder,
+            // not by us.
+            return "Applications folder — use Finder to move apps to Trash"
+        }
+        return nil
+    }
+
+    private func friendlyTrashError(_ error: Error, path: String) -> String {
+        let ns = error as NSError
+        if ns.domain == NSCocoaErrorDomain {
+            switch ns.code {
+            case NSFileNoSuchFileError, NSFileReadNoSuchFileError:
+                return "File no longer exists"
+            case NSFileWriteNoPermissionError:
+                return "Permission denied. Grant DiskLens Full Disk Access in System Settings to delete files in protected locations."
+            case NSFileWriteOutOfSpaceError:
+                return "Disk is full — cannot move to Trash"
+            case NSFileWriteVolumeReadOnlyError:
+                return "Volume is read-only"
+            default:
+                break
+            }
+        }
+        // POSIX errors surfaced through the bridge use NSPOSIXErrorDomain.
+        if ns.domain == NSPOSIXErrorDomain {
+            switch ns.code {
+            case Int(EACCES), Int(EPERM):
+                return "Permission denied. Grant DiskLens Full Disk Access in System Settings to delete files in protected locations."
+            case Int(ENOENT):
+                return "File no longer exists"
+            case Int(EROFS):
+                return "Volume is read-only"
+            default:
+                break
+            }
+        }
+        return ns.localizedDescription
     }
 
     func skipSuggestion(messageID: UUID, suggestionID: UUID) {

@@ -1,5 +1,6 @@
 import Foundation
 import SwiftUI
+import AppKit
 
 // Maps file extensions to stable, human-recognizable colors used in both the
 // treemap and the legend panel. Colors are chosen to be bright and distinct on
@@ -34,6 +35,23 @@ enum FileCategory: String, CaseIterable, Hashable {
         case .data:     return Color(red: 0.20, green: 0.80, blue: 0.75)
         case .system:   return Color(red: 0.60, green: 0.60, blue: 0.65)
         case .other:    return Color(red: 0.75, green: 0.50, blue: 0.55)
+        }
+    }
+
+    // AppKit sibling of `color`, used by CoreGraphics rendering into a
+    // CGContext (Color → CGColor isn't available until macOS 14).
+    var nsColor: NSColor {
+        switch self {
+        case .video:    return NSColor(red: 0.95, green: 0.30, blue: 0.45, alpha: 1)
+        case .audio:    return NSColor(red: 0.90, green: 0.55, blue: 0.20, alpha: 1)
+        case .image:    return NSColor(red: 0.95, green: 0.80, blue: 0.20, alpha: 1)
+        case .document: return NSColor(red: 0.35, green: 0.75, blue: 0.95, alpha: 1)
+        case .code:     return NSColor(red: 0.40, green: 0.85, blue: 0.50, alpha: 1)
+        case .archive:  return NSColor(red: 0.65, green: 0.40, blue: 0.85, alpha: 1)
+        case .app:      return NSColor(red: 0.30, green: 0.55, blue: 0.95, alpha: 1)
+        case .data:     return NSColor(red: 0.20, green: 0.80, blue: 0.75, alpha: 1)
+        case .system:   return NSColor(red: 0.60, green: 0.60, blue: 0.65, alpha: 1)
+        case .other:    return NSColor(red: 0.75, green: 0.50, blue: 0.55, alpha: 1)
         }
     }
 }
