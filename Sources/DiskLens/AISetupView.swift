@@ -116,7 +116,7 @@ struct AISetupView: View {
                         Button {
                             pickedProvider = p
                             modelName = p.defaultModel
-                            apiKey = Keychain.load(account: p.keychainAccount) ?? ""
+                            apiKey = ""
                             errorText = nil
                             phase = .signIn
                         } label: {
@@ -133,7 +133,8 @@ struct AISetupView: View {
     }
 
     private func providerCard(_ p: AIProvider) -> some View {
-        let isConnected = Keychain.load(account: p.keychainAccount) != nil
+        // Cheap in-memory check — never read Keychain during SwiftUI render.
+        let isConnected = (model.aiProvider == p) && model.aiConnected
         return HStack(spacing: 14) {
             ProviderLogoView(provider: p, size: 36, padding: 7)
 

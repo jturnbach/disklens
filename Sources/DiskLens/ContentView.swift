@@ -34,6 +34,13 @@ final class AppModel: ObservableObject {
     @Published var chatPresentation: ChatPresentation = .hidden
     @Published var showAISetup: Bool = false
 
+    // The API key is read from Keychain ONCE on launch (or when the user
+    // connects) and cached here. SwiftUI re-renders call `aiConnected` /
+    // `aiClient` very frequently — on an ad-hoc signed app, every Keychain
+    // read triggers an ACL prompt, which would pop the auth modal on every
+    // scan progress tick. Cache + never hit Keychain from a view body.
+    private var cachedAPIKey: String? = nil
+
     // Holds the floating NSWindow when the user pops the chat out. Kept on
     // the model so we can bring it to front or close it from anywhere.
     var floatingChatController: NSWindowController?
@@ -69,14 +76,15 @@ final class AppModel: ObservableObject {
 
     var aiClient: AIClient? {
         guard let provider = aiProvider,
-              let key = Keychain.load(account: provider.keychainAccount),
-              !key.isEmpty else { return nil }
+              let key = cachedAPIKey, !key.isEmpty else { return nil }
         return AIClient(provider: provider,
                         apiKey: key,
                         model: aiModel.isEmpty ? provider.defaultModel : aiModel)
     }
 
-    var aiConnected: Bool { aiClient != nil }
+    var aiConnected: Bool {
+        aiProvider != nil && !(cachedAPIKey ?? "").isEmpty
+    }
 
     // Persists which provider the user picked (the actual key lives in the
     // Keychain — we only store the provider id and model in defaults).
@@ -84,18 +92,23 @@ final class AppModel: ObservableObject {
     private let activeModelKey    = "DiskLens.activeAIModel"
 
     func loadAISettings() {
-        if let raw = UserDefaults.standard.string(forKey: activeProviderKey),
-           let provider = AIProvider(rawValue: raw),
-           Keychain.load(account: provider.keychainAccount) != nil {
-            aiProvider = provider
-            aiModel = UserDefaults.standard.string(forKey: activeModelKey)
-                ?? provider.defaultModel
-        }
+        // Called exactly once at launch. One Keychain read here is OK; the
+        // user will see a single "Always Allow" prompt, grant it, and then
+        // every subsequent check goes through the in-memory cache.
+        guard let raw = UserDefaults.standard.string(forKey: activeProviderKey),
+              let provider = AIProvider(rawValue: raw),
+              let key = Keychain.load(account: provider.keychainAccount),
+              !key.isEmpty else { return }
+        aiProvider = provider
+        cachedAPIKey = key
+        aiModel = UserDefaults.standard.string(forKey: activeModelKey)
+            ?? provider.defaultModel
     }
 
     func setAIProvider(_ provider: AIProvider, apiKey: String, model: String) throws {
         try Keychain.save(account: provider.keychainAccount, value: apiKey)
         aiProvider = provider
+        cachedAPIKey = apiKey
         aiModel = model
         UserDefaults.standard.set(provider.rawValue, forKey: activeProviderKey)
         UserDefaults.standard.set(model, forKey: activeModelKey)
@@ -107,6 +120,7 @@ final class AppModel: ObservableObject {
             Keychain.delete(account: p.keychainAccount)
         }
         aiProvider = nil
+        cachedAPIKey = nil
         aiModel = ""
         aiMessages = []
         UserDefaults.standard.removeObject(forKey: activeProviderKey)
