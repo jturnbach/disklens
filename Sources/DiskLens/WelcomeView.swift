@@ -128,22 +128,23 @@ struct WelcomeView: View {
 
     private var aiFooter: some View {
         HStack(spacing: 8) {
-            Image(systemName: "sparkles")
-                .font(.system(size: 11, weight: .semibold))
-                .foregroundStyle(.purple)
             if model.aiConnected, let p = model.aiProvider {
-                Text("AI assistant connected · \(p.displayName)")
+                ProviderLogoView(provider: p, size: 14, padding: 3)
+                Text("Signed in to \(p.productName)")
                     .font(.system(size: 11, weight: .medium))
                     .foregroundStyle(.secondary)
                 Spacer()
                 Button("Change") { model.showAISetup = true }
                     .controlSize(.small)
                     .buttonStyle(.link)
-                Button("Disconnect") { model.disconnectAI() }
+                Button("Sign out") { model.disconnectAI() }
                     .controlSize(.small)
                     .buttonStyle(.link)
                     .foregroundStyle(.red)
             } else {
+                Image(systemName: "sparkles")
+                    .font(.system(size: 11, weight: .semibold))
+                    .foregroundStyle(.purple)
                 Text("Optional: connect an AI assistant for cleanup advice")
                     .font(.system(size: 11, weight: .regular))
                     .foregroundStyle(.secondary)

@@ -7,7 +7,10 @@ let package = Package(
     targets: [
         .executableTarget(
             name: "DiskLens",
-            path: "Sources/DiskLens"
+            path: "Sources/DiskLens",
+            resources: [
+                .process("Resources/Logos")
+            ]
         )
     ]
 )

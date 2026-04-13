@@ -1,5 +1,6 @@
 import Foundation
 import SwiftUI
+import AppKit
 
 // All four supported providers funnel through one Codable-friendly enum so
 // the chat code never has to switch on provider.
@@ -29,8 +30,18 @@ enum AIProvider: String, CaseIterable, Identifiable, Codable {
         }
     }
 
-    // SF Symbol used in setup cards — purely cosmetic.
-    var symbol: String {
+    // Name of the bundled PNG logo inside Resources/Logos.
+    var logoResourceName: String {
+        switch self {
+        case .openAI:    return "openai"
+        case .anthropic: return "claude"
+        case .gemini:    return "gemini"
+        case .xAI:       return "grok"
+        }
+    }
+
+    // SF Symbol fallback if the logo image fails to load.
+    var fallbackSymbol: String {
         switch self {
         case .openAI:    return "bubble.left.and.bubble.right.fill"
         case .anthropic: return "sparkle"
@@ -39,12 +50,25 @@ enum AIProvider: String, CaseIterable, Identifiable, Codable {
         }
     }
 
+    // Official-ish brand colors used for accent tinting of cards, buttons,
+    // and the toolbar. Sourced from each provider's public brand materials.
     var accentColor: Color {
         switch self {
-        case .openAI:    return Color(red: 0.10, green: 0.65, blue: 0.55)
-        case .anthropic: return Color(red: 0.85, green: 0.40, blue: 0.20)
-        case .gemini:    return Color(red: 0.30, green: 0.55, blue: 0.95)
-        case .xAI:       return Color(red: 0.20, green: 0.20, blue: 0.20)
+        case .openAI:    return Color(red: 0.063, green: 0.639, blue: 0.545)  // OpenAI teal
+        case .anthropic: return Color(red: 0.851, green: 0.459, blue: 0.341)  // Claude coral
+        case .gemini:    return Color(red: 0.259, green: 0.522, blue: 0.957)  // Google blue
+        case .xAI:       return Color(red: 0.10,  green: 0.10,  blue: 0.10)   // Grok near-black
+        }
+    }
+
+    // Background tint for the logo badge — brand color at low opacity, or
+    // a light gray for providers with dark logos on dark backgrounds.
+    var badgeBackground: Color {
+        switch self {
+        case .openAI:    return Color.white
+        case .anthropic: return Color(red: 1.0, green: 0.95, blue: 0.92)
+        case .gemini:    return Color.white
+        case .xAI:       return Color.white
         }
     }
 
@@ -80,6 +104,59 @@ enum AIProvider: String, CaseIterable, Identifiable, Codable {
     }
 
     var keychainAccount: String { "key.\(rawValue)" }
+}
+
+// MARK: - Logo badge
+
+// Loads the bundled PNG logo for a provider via Bundle.module. Kept in one
+// place so every call site — setup picker, welcome footer, toolbar button,
+// chat header — renders consistently.
+enum ProviderLogo {
+    static func image(for provider: AIProvider) -> NSImage? {
+        // SwiftPM puts processed resources in the target's Bundle.module.
+        if let url = Bundle.module.url(
+            forResource: provider.logoResourceName,
+            withExtension: "png"),
+           let img = NSImage(contentsOf: url) {
+            return img
+        }
+        return nil
+    }
+}
+
+struct ProviderLogoView: View {
+    let provider: AIProvider
+    var size: CGFloat = 28
+    var padding: CGFloat = 6
+    var background: Bool = true
+
+    var body: some View {
+        ZStack {
+            if background {
+                RoundedRectangle(cornerRadius: size * 0.22, style: .continuous)
+                    .fill(provider.badgeBackground)
+                    .overlay(
+                        RoundedRectangle(cornerRadius: size * 0.22,
+                                          style: .continuous)
+                            .strokeBorder(Color.black.opacity(0.08),
+                                          lineWidth: 0.5)
+                    )
+            }
+            if let img = ProviderLogo.image(for: provider) {
+                Image(nsImage: img)
+                    .resizable()
+                    .interpolation(.high)
+                    .aspectRatio(contentMode: .fit)
+                    .padding(padding)
+            } else {
+                Image(systemName: provider.fallbackSymbol)
+                    .font(.system(size: size * 0.55, weight: .semibold))
+                    .foregroundStyle(provider.accentColor)
+            }
+        }
+        .frame(width: size + padding * 2,
+               height: size + padding * 2)
+    }
 }
 
 // One conversational turn — provider-agnostic role enum.

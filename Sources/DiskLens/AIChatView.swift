@@ -25,14 +25,18 @@ struct AIChatView: View {
 
     private var header: some View {
         HStack(spacing: 12) {
-            ZStack {
-                RoundedRectangle(cornerRadius: 10, style: .continuous)
-                    .fill((model.aiProvider?.accentColor ?? .gray).opacity(0.18))
-                Image(systemName: model.aiProvider?.symbol ?? "sparkles")
-                    .font(.system(size: 20, weight: .semibold))
-                    .foregroundStyle(model.aiProvider?.accentColor ?? .gray)
+            if let p = model.aiProvider {
+                ProviderLogoView(provider: p, size: 28, padding: 6)
+            } else {
+                Image(systemName: "sparkles")
+                    .font(.system(size: 18, weight: .semibold))
+                    .foregroundStyle(Color.purple)
+                    .frame(width: 40, height: 40)
+                    .background(
+                        RoundedRectangle(cornerRadius: 10, style: .continuous)
+                            .fill(Color.purple.opacity(0.18))
+                    )
             }
-            .frame(width: 38, height: 38)
 
             VStack(alignment: .leading, spacing: 2) {
                 Text("DiskLens Assistant")
@@ -188,13 +192,15 @@ struct AIChatView: View {
         HStack(alignment: .top, spacing: 10) {
             if m.role == .user { Spacer(minLength: 40) }
             if m.role == .assistant {
-                Image(systemName: "sparkles")
-                    .font(.system(size: 12, weight: .semibold))
-                    .foregroundStyle(Color.purple)
-                    .frame(width: 22, height: 22)
-                    .background(
-                        Circle().fill(Color.purple.opacity(0.18))
-                    )
+                if let p = model.aiProvider {
+                    ProviderLogoView(provider: p, size: 16, padding: 3)
+                } else {
+                    Image(systemName: "sparkles")
+                        .font(.system(size: 12, weight: .semibold))
+                        .foregroundStyle(Color.purple)
+                        .frame(width: 22, height: 22)
+                        .background(Circle().fill(Color.purple.opacity(0.18)))
+                }
             }
             VStack(alignment: .leading, spacing: 4) {
                 renderedContent(m)
@@ -258,11 +264,15 @@ struct AIChatView: View {
 
     private var typingIndicator: some View {
         HStack(alignment: .top, spacing: 10) {
-            Image(systemName: "sparkles")
-                .font(.system(size: 12, weight: .semibold))
-                .foregroundStyle(Color.purple)
-                .frame(width: 22, height: 22)
-                .background(Circle().fill(Color.purple.opacity(0.18)))
+            if let p = model.aiProvider {
+                ProviderLogoView(provider: p, size: 16, padding: 3)
+            } else {
+                Image(systemName: "sparkles")
+                    .font(.system(size: 12, weight: .semibold))
+                    .foregroundStyle(Color.purple)
+                    .frame(width: 22, height: 22)
+                    .background(Circle().fill(Color.purple.opacity(0.18)))
+            }
             HStack(spacing: 4) {
                 ForEach(0..<3) { i in
                     Circle()
