@@ -24,6 +24,85 @@ final class AppModel: ObservableObject {
     @Published var volumeTotalBytes: Int64 = 0
     @Published var scanRootIsVolume: Bool = false
 
+    // ----- AI assistant state -----
+    @Published var aiProvider: AIProvider? = nil
+    @Published var aiModel: String = ""
+    @Published var aiMessages: [ChatMessage] = []
+    @Published var aiSending: Bool = false
+    @Published var showAIChat: Bool = false
+    @Published var showAISetup: Bool = false
+
+    var aiClient: AIClient? {
+        guard let provider = aiProvider,
+              let key = Keychain.load(account: provider.keychainAccount),
+              !key.isEmpty else { return nil }
+        return AIClient(provider: provider,
+                        apiKey: key,
+                        model: aiModel.isEmpty ? provider.defaultModel : aiModel)
+    }
+
+    var aiConnected: Bool { aiClient != nil }
+
+    // Persists which provider the user picked (the actual key lives in the
+    // Keychain — we only store the provider id and model in defaults).
+    private let activeProviderKey = "DiskLens.activeAIProvider"
+    private let activeModelKey    = "DiskLens.activeAIModel"
+
+    func loadAISettings() {
+        if let raw = UserDefaults.standard.string(forKey: activeProviderKey),
+           let provider = AIProvider(rawValue: raw),
+           Keychain.load(account: provider.keychainAccount) != nil {
+            aiProvider = provider
+            aiModel = UserDefaults.standard.string(forKey: activeModelKey)
+                ?? provider.defaultModel
+        }
+    }
+
+    func setAIProvider(_ provider: AIProvider, apiKey: String, model: String) throws {
+        try Keychain.save(account: provider.keychainAccount, value: apiKey)
+        aiProvider = provider
+        aiModel = model
+        UserDefaults.standard.set(provider.rawValue, forKey: activeProviderKey)
+        UserDefaults.standard.set(model, forKey: activeModelKey)
+        aiMessages = []
+    }
+
+    func disconnectAI() {
+        if let p = aiProvider {
+            Keychain.delete(account: p.keychainAccount)
+        }
+        aiProvider = nil
+        aiModel = ""
+        aiMessages = []
+        UserDefaults.standard.removeObject(forKey: activeProviderKey)
+        UserDefaults.standard.removeObject(forKey: activeModelKey)
+    }
+
+    func sendAIMessage(_ text: String) {
+        guard let client = aiClient else { return }
+        let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return }
+        aiMessages.append(ChatMessage(role: .user, content: trimmed))
+        aiSending = true
+
+        let system = ScanContext.systemPrompt(for: self)
+        let history = aiMessages
+        Task { @MainActor in
+            do {
+                let reply = try await client.send(system: system, history: history)
+                aiMessages.append(ChatMessage(role: .assistant, content: reply))
+            } catch {
+                aiMessages.append(ChatMessage(
+                    role: .assistant,
+                    content: "Error: \(error.localizedDescription)",
+                    isError: true))
+            }
+            aiSending = false
+        }
+    }
+
+    func clearAIChat() { aiMessages = [] }
+
     // The most recently focused node — used for single-target operations like
     // zoom, preview, status bar. Multi-target operations use selectedNodes.
     var primarySelected: FileNode? { selectedNodes.last }
@@ -335,6 +414,14 @@ struct ContentView: View {
                 .environmentObject(model)
                 .interactiveDismissDisabled(true)
         }
+        .sheet(isPresented: $model.showAISetup) {
+            AISetupView()
+                .environmentObject(model)
+        }
+        .sheet(isPresented: $model.showAIChat) {
+            AIChatView()
+                .environmentObject(model)
+        }
     }
 }
 
@@ -384,6 +471,17 @@ private struct Toolbar: View {
                       || model.canonicalSelection().allSatisfy { $0 === model.root })
 
             Spacer()
+
+            ToolbarButton(title: model.aiConnected ? "Assistant" : "Connect AI",
+                          systemImage: "sparkles",
+                          tint: .purple,
+                          highlighted: model.aiConnected) {
+                if model.aiConnected {
+                    model.showAIChat = true
+                } else {
+                    model.showAISetup = true
+                }
+            }
 
             ToolbarButton(title: "Preview",
                           systemImage: model.showPreview ? "sidebar.right" : "sidebar.right",

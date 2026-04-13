@@ -17,6 +17,7 @@ struct DiskLensApp: App {
             ContentView()
                 .environmentObject(model)
                 .preferredColorScheme(.dark)
+                .onAppear { model.loadAISettings() }
         }
         .windowStyle(.titleBar)
         .windowToolbarStyle(.unified)

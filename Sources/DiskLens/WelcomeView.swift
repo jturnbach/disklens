@@ -15,6 +15,8 @@ struct WelcomeView: View {
                 VStack(alignment: .leading, spacing: 18) {
                     permissionsSection
                     Divider()
+                    aiSection
+                    Divider()
                     scanOptionsSection
                 }
                 .padding(20)
@@ -113,6 +115,65 @@ struct WelcomeView: View {
                 }
                 .padding(.leading, 38)
             }
+        }
+    }
+
+    private var aiSection: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            Text("AI ASSISTANT")
+                .font(.system(size: 10, weight: .semibold, design: .rounded))
+                .foregroundStyle(.secondary)
+                .tracking(0.6)
+
+            HStack(alignment: .top, spacing: 12) {
+                Image(systemName: model.aiConnected
+                      ? "sparkles.rectangle.stack.fill"
+                      : "sparkles")
+                    .font(.system(size: 22, weight: .semibold))
+                    .foregroundStyle(model.aiConnected ? Color.purple : .secondary)
+                    .frame(width: 26)
+
+                VStack(alignment: .leading, spacing: 4) {
+                    if model.aiConnected, let p = model.aiProvider {
+                        Text("Connected to \(p.displayName) · \(model.aiModel)")
+                            .font(.system(size: 13, weight: .semibold))
+                        Text("After your scan, click Assistant in the toolbar to ask the AI what you can safely delete. Your scan summary is sent — no file contents.")
+                            .font(.system(size: 11, weight: .regular))
+                            .foregroundStyle(.secondary)
+                            .fixedSize(horizontal: false, vertical: true)
+                    } else {
+                        Text("Connect ChatGPT, Claude, Gemini, or Grok")
+                            .font(.system(size: 13, weight: .semibold))
+                        Text("Optional. Once connected, the assistant gets a summary of your scan and helps you decide what's safe to delete. You'll need an API key from the provider.")
+                            .font(.system(size: 11, weight: .regular))
+                            .foregroundStyle(.secondary)
+                            .fixedSize(horizontal: false, vertical: true)
+                    }
+                }
+                Spacer(minLength: 0)
+            }
+
+            HStack(spacing: 8) {
+                Button {
+                    model.showAISetup = true
+                } label: {
+                    Label(model.aiConnected ? "Change Provider…" : "Connect AI…",
+                          systemImage: "sparkles")
+                }
+                .controlSize(.regular)
+                .buttonStyle(.borderedProminent)
+                .tint(.purple)
+
+                if model.aiConnected {
+                    Button(role: .destructive) {
+                        model.disconnectAI()
+                    } label: {
+                        Text("Disconnect")
+                    }
+                    .controlSize(.regular)
+                }
+            }
+            .padding(.leading, 38)
         }
     }
 
