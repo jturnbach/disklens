@@ -4,7 +4,6 @@ import AppKit
 struct AIChatView: View {
     @EnvironmentObject var model: AppModel
 
-    @State private var draft: String = ""
     @FocusState private var inputFocused: Bool
 
     var body: some View {
@@ -170,7 +169,7 @@ struct AIChatView: View {
             VStack(spacing: 6) {
                 ForEach(suggestions, id: \.self) { s in
                     Button {
-                        send(s)
+                        sendText(s)
                     } label: {
                         HStack {
                             Image(systemName: "arrow.right.circle.fill")
@@ -327,7 +326,9 @@ struct AIChatView: View {
     private var inputBar: some View {
         VStack(spacing: 0) {
             HStack(alignment: .bottom, spacing: 8) {
-                TextField("Ask about your disk usage…", text: $draft, axis: .vertical)
+                TextField("Ask about your disk usage…",
+                          text: $model.aiDraft,
+                          axis: .vertical)
                     .textFieldStyle(.plain)
                     .lineLimit(1...6)
                     .focused($inputFocused)
@@ -340,21 +341,21 @@ struct AIChatView: View {
                         RoundedRectangle(cornerRadius: 10)
                             .strokeBorder(Color.primary.opacity(0.1), lineWidth: 0.5)
                     )
-                    .onSubmit { send(draft) }
+                    .onSubmit { sendText(model.aiDraft) }
 
                 Button {
-                    send(draft)
+                    sendText(model.aiDraft)
                 } label: {
                     Image(systemName: "arrow.up.circle.fill")
                         .font(.system(size: 26))
                         .foregroundStyle(
-                            draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+                            model.aiDraft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
                             ? Color.gray.opacity(0.4)
                             : Color.accentColor)
                 }
                 .buttonStyle(.plain)
                 .disabled(model.aiSending
-                          || draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                          || model.aiDraft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
             }
             .padding(14)
 
@@ -370,10 +371,10 @@ struct AIChatView: View {
         }
     }
 
-    private func send(_ text: String) {
+    private func sendText(_ text: String) {
         let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { return }
-        draft = ""
+        model.aiDraft = ""
         model.sendAIMessage(trimmed)
     }
 }

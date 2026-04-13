@@ -89,6 +89,15 @@ enum NodeContextMenu {
 
         menu.addItem(NSMenuItem.separator())
 
+        let askTitle = isMulti
+            ? "Ask AI about these \(targets.count) items…"
+            : "Ask AI…"
+        add(askTitle, icon: "sparkles") {
+            model.prefillChatPrompt(for: targets)
+        }
+
+        menu.addItem(NSMenuItem.separator())
+
         add(isMulti ? "Copy \(targets.count) Paths" : "Copy Path",
             icon: "doc.on.clipboard") {
             let pb = NSPasteboard.general

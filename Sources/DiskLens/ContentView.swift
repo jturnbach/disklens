@@ -33,6 +33,9 @@ final class AppModel: ObservableObject {
     @Published var aiSending: Bool = false
     @Published var chatPresentation: ChatPresentation = .hidden
     @Published var showAISetup: Bool = false
+    // The current chat input text. Lifted onto the model so context-menu
+    // actions can prefill it without having to reach into the view's state.
+    @Published var aiDraft: String = ""
 
     // The API key is read from Keychain ONCE on launch (or when the user
     // connects) and cached here. SwiftUI re-renders call `aiConnected` /
@@ -156,6 +159,45 @@ final class AppModel: ObservableObject {
     }
 
     func clearAIChat() { aiMessages = [] }
+
+    // Prefills the chat input with a path-aware question about the given
+    // nodes and opens the chat so the user can edit / confirm before
+    // sending. Never auto-sends. If no provider is connected yet, jump to
+    // setup first; the draft is still set so the user sees it after
+    // finishing setup.
+    func prefillChatPrompt(for targets: [FileNode]) {
+        guard !targets.isEmpty else { return }
+        aiDraft = buildAskPrompt(for: targets)
+        if aiConnected {
+            if chatPresentation == .hidden {
+                chatPresentation = .docked
+            } else if chatPresentation == .floating {
+                floatingChatController?.window?.makeKeyAndOrderFront(nil)
+            }
+        } else {
+            showAISetup = true
+        }
+    }
+
+    private func buildAskPrompt(for targets: [FileNode]) -> String {
+        func abbrev(_ path: String) -> String {
+            NSString(string: path).abbreviatingWithTildeInPath
+        }
+        if targets.count == 1, let t = targets.first {
+            let kind = t.isDirectory ? "folder" : "file"
+            return "What is this \(kind) and is it safe to delete?\n\n`\(abbrev(t.url.path))` — \(ByteFormatter.string(t.totalSize))"
+        }
+        var lines: [String] = []
+        lines.append("What are these items and which ones are safe to delete?")
+        lines.append("")
+        for t in targets.prefix(20) {
+            lines.append("- `\(abbrev(t.url.path))` — \(ByteFormatter.string(t.totalSize))")
+        }
+        if targets.count > 20 {
+            lines.append("- … and \(targets.count - 20) more")
+        }
+        return lines.joined(separator: "\n")
+    }
 
     // MARK: - Suggestion actions (from the chat's inline cards)
 
