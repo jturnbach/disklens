@@ -171,14 +171,29 @@ struct TreemapView: View {
 
     @State private var hovered: FileNode? = nil
 
+    // Layout cache. We recompute the squarified layout only when the tree
+    // (or the zoom root, or a mutation) changes — NOT on every window resize
+    // frame. During live resize we render the cached rects scaled to match
+    // the current bounds, and schedule a relayout 120 ms after the last size
+    // change so the layout snaps crisp once the user stops dragging.
+    @State private var cachedRects: [TreemapRect] = []
+    @State private var cachedLayoutSize: CGSize = .zero
+    @State private var cachedRootRef: ObjectIdentifier? = nil
+    @State private var cachedMutationToken: Int = -1
+    @State private var resizeDebounce: DispatchWorkItem? = nil
+
     var body: some View {
         GeometryReader { geo in
             let displayRoot = zoomRoot ?? root
-            let bounds = CGRect(origin: .zero, size: geo.size)
-            let rects: [TreemapRect] = displayRoot.map {
-                _ = mutationToken
-                return SquarifiedTreemap.layout(root: $0, in: bounds)
-            } ?? []
+            let currentSize = geo.size
+
+            // Rescale the cached rects to the current bounds. While the user
+            // is dragging, this is a cheap per-tile multiply; after the
+            // debounced timer fires with a fresh layout, scale = 1 and we
+            // draw the pristine layout.
+            let rects = scaledRects(cachedRects,
+                                    from: cachedLayoutSize,
+                                    to: currentSize)
 
             // Highlight the union of every selected node's subtree (or the
             // node itself if a file). Walking parents per tile would be
@@ -274,11 +289,101 @@ struct TreemapView: View {
                         .allowsHitTesting(false)
                 }
             }
+            .onAppear {
+                requestRelayoutIfNeeded(size: currentSize,
+                                         root: displayRoot,
+                                         token: mutationToken)
+            }
+            .onChange(of: currentSize) { newSize in
+                requestRelayoutIfNeeded(size: newSize,
+                                         root: displayRoot,
+                                         token: mutationToken)
+            }
+            .onChange(of: mutationToken) { newToken in
+                requestRelayoutIfNeeded(size: currentSize,
+                                         root: displayRoot,
+                                         token: newToken)
+            }
+            .onChange(of: displayRoot.map { ObjectIdentifier($0) }) { _ in
+                requestRelayoutIfNeeded(size: currentSize,
+                                         root: displayRoot,
+                                         token: mutationToken)
+            }
         }
     }
 
     private func tooltipText(_ n: FileNode) -> String {
         "\(n.name)  ·  \(ByteFormatter.string(n.totalSize))"
+    }
+
+    // MARK: - Layout cache + debounce
+
+    // Cheap rescale of cached rects into a new bounding box. Used during
+    // live resize while the squarified layout is deliberately not recomputed.
+    private func scaledRects(_ source: [TreemapRect],
+                             from oldSize: CGSize,
+                             to newSize: CGSize) -> [TreemapRect] {
+        guard oldSize.width > 0, oldSize.height > 0 else { return source }
+        if abs(oldSize.width - newSize.width) < 0.5
+            && abs(oldSize.height - newSize.height) < 0.5 {
+            return source
+        }
+        let sx = newSize.width / oldSize.width
+        let sy = newSize.height / oldSize.height
+        return source.map { tr in
+            TreemapRect(
+                rect: CGRect(x: tr.rect.minX * sx,
+                             y: tr.rect.minY * sy,
+                             width: tr.rect.width * sx,
+                             height: tr.rect.height * sy),
+                node: tr.node,
+                depth: tr.depth)
+        }
+    }
+
+    // Trigger a fresh squarified layout on the next runloop tick, without
+    // mutating @State inside a body evaluation (which SwiftUI warns about).
+    private func requestRelayoutIfNeeded(size: CGSize,
+                                          root: FileNode?,
+                                          token: Int) {
+        let rootRef = root.map { ObjectIdentifier($0) }
+        let needsImmediate = cachedRootRef != rootRef
+            || cachedMutationToken != token
+            || cachedRects.isEmpty
+        let needsResize = cachedLayoutSize != size
+
+        if needsImmediate {
+            DispatchQueue.main.async {
+                self.doLayout(size: size, root: root, token: token)
+            }
+        } else if needsResize {
+            // Debounce: cancel any pending work, schedule new layout 120 ms
+            // after the most recent size change.
+            resizeDebounce?.cancel()
+            let work = DispatchWorkItem {
+                self.doLayout(size: size, root: root, token: token)
+            }
+            resizeDebounce = work
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.12,
+                                           execute: work)
+        }
+    }
+
+    private func doLayout(size: CGSize, root: FileNode?, token: Int) {
+        guard size.width > 1, size.height > 1 else { return }
+        guard let root = root else {
+            cachedRects = []
+            cachedLayoutSize = size
+            cachedRootRef = nil
+            cachedMutationToken = token
+            return
+        }
+        let bounds = CGRect(origin: .zero, size: size)
+        let rects = SquarifiedTreemap.layout(root: root, in: bounds)
+        cachedRects = rects
+        cachedLayoutSize = size
+        cachedRootRef = ObjectIdentifier(root)
+        cachedMutationToken = token
     }
 
     private func subtreeIds(of node: FileNode) -> Set<ObjectIdentifier> {
