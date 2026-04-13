@@ -3,7 +3,6 @@ import AppKit
 
 struct AIChatView: View {
     @EnvironmentObject var model: AppModel
-    @Environment(\.dismiss) private var dismiss
 
     @State private var draft: String = ""
     @FocusState private var inputFocused: Bool
@@ -16,7 +15,6 @@ struct AIChatView: View {
             Divider()
             inputBar
         }
-        .frame(width: 640, height: 700)
         .background(Color(nsColor: .windowBackgroundColor))
         .onAppear { inputFocused = true }
     }
@@ -64,7 +62,7 @@ struct AIChatView: View {
                 Divider()
                 Button(role: .destructive) {
                     model.disconnectAI()
-                    dismiss()
+                    model.closeAIChat()
                 } label: {
                     Label("Disconnect", systemImage: "minus.circle")
                 }
@@ -77,14 +75,39 @@ struct AIChatView: View {
             .menuIndicator(.hidden)
             .fixedSize()
 
+            // Pop-out / pop-in toggle. When docked, shows an "open in new
+            // window" glyph; when floating, shows a "bring back" glyph.
+            if model.chatPresentation == .docked {
+                Button {
+                    model.popOutAIChat()
+                } label: {
+                    Image(systemName: "rectangle.on.rectangle")
+                        .font(.system(size: 14))
+                        .foregroundStyle(.secondary)
+                }
+                .buttonStyle(.plain)
+                .help("Open in a separate window")
+            } else if model.chatPresentation == .floating {
+                Button {
+                    model.popInAIChat()
+                } label: {
+                    Image(systemName: "arrow.down.right.and.arrow.up.left")
+                        .font(.system(size: 14))
+                        .foregroundStyle(.secondary)
+                }
+                .buttonStyle(.plain)
+                .help("Dock back to main window")
+            }
+
             Button {
-                dismiss()
+                model.closeAIChat()
             } label: {
                 Image(systemName: "xmark.circle.fill")
                     .font(.system(size: 18))
                     .foregroundStyle(.tertiary)
             }
             .buttonStyle(.plain)
+            .help("Close assistant")
         }
         .padding(14)
     }

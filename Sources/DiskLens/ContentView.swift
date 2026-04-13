@@ -25,12 +25,47 @@ final class AppModel: ObservableObject {
     @Published var scanRootIsVolume: Bool = false
 
     // ----- AI assistant state -----
+    enum ChatPresentation: Equatable { case hidden, docked, floating }
+
     @Published var aiProvider: AIProvider? = nil
     @Published var aiModel: String = ""
     @Published var aiMessages: [ChatMessage] = []
     @Published var aiSending: Bool = false
-    @Published var showAIChat: Bool = false
+    @Published var chatPresentation: ChatPresentation = .hidden
     @Published var showAISetup: Bool = false
+
+    // Holds the floating NSWindow when the user pops the chat out. Kept on
+    // the model so we can bring it to front or close it from anywhere.
+    var floatingChatController: NSWindowController?
+
+    func openAIChat() {
+        if !aiConnected { showAISetup = true; return }
+        if chatPresentation == .floating {
+            floatingChatController?.window?.makeKeyAndOrderFront(nil)
+        } else {
+            chatPresentation = .docked
+        }
+    }
+
+    func closeAIChat() {
+        if chatPresentation == .floating {
+            floatingChatController?.close()
+            floatingChatController = nil
+        }
+        chatPresentation = .hidden
+    }
+
+    func popOutAIChat() {
+        // Implemented in DiskLensApp.swift where it has access to the
+        // NSHostingView + NSWindow creation helpers.
+        ChatWindowHost.popOut(model: self)
+    }
+
+    func popInAIChat() {
+        floatingChatController?.close()
+        floatingChatController = nil
+        chatPresentation = .docked
+    }
 
     var aiClient: AIClient? {
         guard let provider = aiProvider,
@@ -501,10 +536,6 @@ struct ContentView: View {
             AISetupView()
                 .environmentObject(model)
         }
-        .sheet(isPresented: $model.showAIChat) {
-            AIChatView()
-                .environmentObject(model)
-        }
     }
 
     private var mainLayout: some View {
@@ -539,6 +570,13 @@ struct ContentView: View {
                     .environmentObject(model)
                     .frame(minWidth: 280, idealWidth: 320, maxWidth: 400)
                     .background(Color(nsColor: .windowBackgroundColor))
+
+                if model.chatPresentation == .docked {
+                    AIChatView()
+                        .environmentObject(model)
+                        .frame(minWidth: 340, idealWidth: 400, maxWidth: 560)
+                        .background(Color(nsColor: .windowBackgroundColor))
+                }
             }
             Divider()
             StatusBar()
@@ -552,12 +590,7 @@ private struct Toolbar: View {
 
     var body: some View {
         HStack(spacing: 8) {
-            ToolbarButton(title: "Scan Folder", systemImage: "folder.badge.questionmark") {
-                model.chooseAndScan()
-            }
-            .disabled(model.isScanning)
-
-            ScanDiskMenu()
+            ScanMenu()
                 .environmentObject(model)
                 .disabled(model.isScanning)
 
@@ -597,11 +630,13 @@ private struct Toolbar: View {
             ToolbarButton(title: model.aiConnected ? "Assistant" : "Connect AI",
                           systemImage: "sparkles",
                           tint: .purple,
-                          highlighted: model.aiConnected) {
-                if model.aiConnected {
-                    model.showAIChat = true
-                } else {
+                          highlighted: model.chatPresentation != .hidden) {
+                if !model.aiConnected {
                     model.showAISetup = true
+                } else if model.chatPresentation == .docked {
+                    model.closeAIChat()
+                } else {
+                    model.openAIChat()
                 }
             }
 
@@ -734,29 +769,40 @@ private struct ProgressBar: View {
     }
 }
 
-private struct ScanDiskMenu: View {
+private struct ScanMenu: View {
     @EnvironmentObject var model: AppModel
     @State private var volumes: [AppModel.VolumeInfo] = []
 
     var body: some View {
         Menu {
-            ForEach(volumes) { v in
-                Button {
-                    model.startScan(url: v.id)
-                } label: {
-                    let used = v.totalBytes - v.freeBytes
-                    Text("\(v.name) — \(ByteFormatter.string(used)) used of \(ByteFormatter.string(v.totalBytes))")
-                }
+            Button {
+                model.chooseAndScan()
+            } label: {
+                Label("Choose Folder…", systemImage: "folder.badge.questionmark")
             }
-            if volumes.isEmpty {
-                Text("No volumes available")
+
+            if !volumes.isEmpty {
+                Divider()
+                Section("Disks") {
+                    ForEach(volumes) { v in
+                        Button {
+                            model.startScan(url: v.id)
+                        } label: {
+                            let used = v.totalBytes - v.freeBytes
+                            Label("\(v.name) — \(ByteFormatter.string(used)) used of \(ByteFormatter.string(v.totalBytes))",
+                                  systemImage: v.isRemovable
+                                    ? "externaldrive.fill"
+                                    : "internaldrive.fill")
+                        }
+                    }
+                }
             }
         } label: {
             HStack(spacing: 6) {
-                Image(systemName: "internaldrive.fill")
+                Image(systemName: "magnifyingglass")
                     .font(.system(size: 13, weight: .semibold))
                     .foregroundStyle(Color.accentColor)
-                Text("Scan Disk")
+                Text("Scan")
                     .font(.system(size: 12, weight: .medium))
                 Image(systemName: "chevron.down")
                     .font(.system(size: 9, weight: .semibold))
@@ -777,8 +823,6 @@ private struct ScanDiskMenu: View {
         .menuIndicator(.hidden)
         .fixedSize()
         .onAppear { volumes = model.mountedVolumes() }
-        // Refresh the list whenever the menu is opened in case a volume was
-        // mounted/unmounted since launch.
         .simultaneousGesture(TapGesture().onEnded {
             volumes = model.mountedVolumes()
         })
