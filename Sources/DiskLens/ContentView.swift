@@ -87,10 +87,15 @@ final class AppModel: ObservableObject {
 
         let system = ScanContext.systemPrompt(for: self)
         let history = aiMessages
+        let index = pathIndex
         Task { @MainActor in
             do {
                 let reply = try await client.send(system: system, history: history)
-                aiMessages.append(ChatMessage(role: .assistant, content: reply))
+                let (prose, suggestions) = SuggestionParser.parse(reply, pathIndex: index)
+                aiMessages.append(ChatMessage(
+                    role: .assistant,
+                    content: prose,
+                    suggestions: suggestions))
             } catch {
                 aiMessages.append(ChatMessage(
                     role: .assistant,
@@ -102,6 +107,82 @@ final class AppModel: ObservableObject {
     }
 
     func clearAIChat() { aiMessages = [] }
+
+    // MARK: - Suggestion actions (from the chat's inline cards)
+
+    private func findSuggestion(messageID: UUID,
+                                suggestionID: UUID)
+    -> (msgIdx: Int, sugIdx: Int)? {
+        guard let mi = aiMessages.firstIndex(where: { $0.id == messageID }),
+              let si = aiMessages[mi].suggestions.firstIndex(where: { $0.id == suggestionID })
+        else { return nil }
+        return (mi, si)
+    }
+
+    func trashSuggestion(messageID: UUID, suggestionID: UUID) {
+        guard let loc = findSuggestion(messageID: messageID, suggestionID: suggestionID) else { return }
+        var sug = aiMessages[loc.msgIdx].suggestions[loc.sugIdx]
+        guard let ref = sug.nodeRef,
+              let node = pathIndex[ref.path],
+              node !== root else {
+            sug.status = .failed("Not in current scan")
+            aiMessages[loc.msgIdx].suggestions[loc.sugIdx] = sug
+            return
+        }
+        do {
+            var trashed: NSURL? = nil
+            try FileManager.default.trashItem(at: node.url, resultingItemURL: &trashed)
+            removeNodeFromTree(node)
+            sug.status = .deleted
+        } catch {
+            sug.status = .failed(error.localizedDescription)
+        }
+        aiMessages[loc.msgIdx].suggestions[loc.sugIdx] = sug
+    }
+
+    func skipSuggestion(messageID: UUID, suggestionID: UUID) {
+        guard let loc = findSuggestion(messageID: messageID, suggestionID: suggestionID) else { return }
+        aiMessages[loc.msgIdx].suggestions[loc.sugIdx].status = .skipped
+    }
+
+    func revealSuggestion(messageID: UUID, suggestionID: UUID) {
+        guard let loc = findSuggestion(messageID: messageID, suggestionID: suggestionID),
+              let ref = aiMessages[loc.msgIdx].suggestions[loc.sugIdx].nodeRef,
+              let node = pathIndex[ref.path] else { return }
+        NSWorkspace.shared.activateFileViewerSelecting([node.url])
+    }
+
+    func trashAllPendingSuggestions(messageID: UUID) {
+        guard let mi = aiMessages.firstIndex(where: { $0.id == messageID }) else { return }
+        let pending = aiMessages[mi].suggestions.enumerated()
+            .filter { $0.element.status == .pending && $0.element.isResolved }
+        // Confirm once for the whole batch.
+        let totalBytes = pending.reduce(Int64(0)) { $0 + $1.element.resolvedSize }
+        let alert = NSAlert()
+        alert.messageText = "Move \(pending.count) items to Trash?"
+        alert.informativeText = "\(ByteFormatter.string(totalBytes)) total. Suggested by the AI assistant."
+        alert.alertStyle = .warning
+        alert.addButton(withTitle: "Move to Trash")
+        alert.addButton(withTitle: "Cancel")
+        guard alert.runModal() == .alertFirstButtonReturn else { return }
+
+        // Trash deepest paths first so parents don't remove children under
+        // us before we can mark them.
+        let ordered = pending.sorted {
+            $0.element.nodeRef?.path.count ?? 0 > $1.element.nodeRef?.path.count ?? 0
+        }
+        for (si, _) in ordered {
+            let sugID = aiMessages[mi].suggestions[si].id
+            trashSuggestion(messageID: messageID, suggestionID: sugID)
+        }
+    }
+
+    func skipAllPendingSuggestions(messageID: UUID) {
+        guard let mi = aiMessages.firstIndex(where: { $0.id == messageID }) else { return }
+        for i in aiMessages[mi].suggestions.indices where aiMessages[mi].suggestions[i].status == .pending {
+            aiMessages[mi].suggestions[i].status = .skipped
+        }
+    }
 
     // The most recently focused node — used for single-target operations like
     // zoom, preview, status bar. Multi-target operations use selectedNodes.
@@ -130,6 +211,11 @@ final class AppModel: ObservableObject {
     // know to invalidate cached state. Reference equality alone is unreliable
     // because we mutate nodes in place during trash.
     @Published var mutationToken: Int = 0
+
+    // Absolute-path → node lookup, rebuilt after each scan and kept in sync
+    // as nodes are trashed. Used by the AI assistant to resolve a model-
+    // emitted path back to a real FileNode for interactive delete cards.
+    var pathIndex: [String: FileNode] = [:]
 
     private let scanner = Scanner()
 
@@ -172,8 +258,10 @@ final class AppModel: ObservableObject {
                 self.statusText = "\(node.fileCount.formatted()) files · \(node.dirCount.formatted()) folders · \(ByteFormatter.string(node.totalSize)) — \(node.url.path)"
                 self.legend = self.computeLegend(root: node)
                 self.captureVolumeInfo(scanRoot: node.url)
+                self.rebuildPathIndex()
             } else {
                 self.statusText = "Scan cancelled."
+                self.pathIndex = [:]
             }
         })
     }
@@ -318,6 +406,13 @@ final class AppModel: ObservableObject {
             cur.dirCount -= removedDirs
             p = cur.parent
         }
+        // Drop the removed subtree from the path index so stale pointers
+        // don't survive in later AI suggestion lookups.
+        var stack: [FileNode] = [node]
+        while let n = stack.popLast() {
+            pathIndex.removeValue(forKey: n.url.path)
+            if n.isDirectory { stack.append(contentsOf: n.children) }
+        }
         if let r = root {
             legend = computeLegend(root: r)
             statusText = "\(r.fileCount.formatted()) files · \(r.dirCount.formatted()) folders · \(ByteFormatter.string(r.totalSize)) — \(r.url.path)"
@@ -328,6 +423,17 @@ final class AppModel: ObservableObject {
         }
         if zoomRoot === node { zoomRoot = parent }
         mutationToken += 1
+    }
+
+    private func rebuildPathIndex() {
+        var idx: [String: FileNode] = [:]
+        guard let r = root else { pathIndex = [:]; return }
+        var stack: [FileNode] = [r]
+        while let n = stack.popLast() {
+            idx[n.url.path] = n
+            if n.isDirectory { stack.append(contentsOf: n.children) }
+        }
+        pathIndex = idx
     }
 
     private func captureVolumeInfo(scanRoot: URL) {

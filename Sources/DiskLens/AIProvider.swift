@@ -159,12 +159,14 @@ struct ProviderLogoView: View {
     }
 }
 
-// One conversational turn — provider-agnostic role enum.
+// One conversational turn — provider-agnostic role enum. Assistant messages
+// can carry a parsed suggestion list alongside the prose content.
 struct ChatMessage: Identifiable, Equatable {
     enum Role: String { case user, assistant, system }
     let id = UUID()
     let role: Role
     var content: String
+    var suggestions: [CleanupSuggestion] = []
     var timestamp: Date = Date()
     var isError: Bool = false
 }

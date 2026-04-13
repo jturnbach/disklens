@@ -202,19 +202,27 @@ struct AIChatView: View {
                         .background(Circle().fill(Color.purple.opacity(0.18)))
                 }
             }
-            VStack(alignment: .leading, spacing: 4) {
-                renderedContent(m)
-                    .textSelection(.enabled)
-                    .padding(.horizontal, 12)
-                    .padding(.vertical, 9)
-                    .background(
-                        RoundedRectangle(cornerRadius: 11, style: .continuous)
-                            .fill(bubbleColor(m))
-                    )
-                    .overlay(
-                        RoundedRectangle(cornerRadius: 11, style: .continuous)
-                            .strokeBorder(Color.primary.opacity(0.06), lineWidth: 0.5)
-                    )
+            VStack(alignment: .leading, spacing: 8) {
+                if !m.content.isEmpty {
+                    renderedContent(m)
+                        .textSelection(.enabled)
+                        .padding(.horizontal, 12)
+                        .padding(.vertical, 9)
+                        .background(
+                            RoundedRectangle(cornerRadius: 11, style: .continuous)
+                                .fill(bubbleColor(m))
+                        )
+                        .overlay(
+                            RoundedRectangle(cornerRadius: 11, style: .continuous)
+                                .strokeBorder(Color.primary.opacity(0.06),
+                                              lineWidth: 0.5)
+                        )
+                }
+                if m.role == .assistant && !m.suggestions.isEmpty {
+                    SuggestionCardView(messageID: m.id,
+                                       suggestions: m.suggestions)
+                        .environmentObject(model)
+                }
             }
             if m.role == .assistant { Spacer(minLength: 40) }
             if m.role == .user {
