@@ -187,13 +187,19 @@ struct TreemapView: View {
             let displayRoot = zoomRoot ?? root
             let currentSize = geo.size
 
-            // Rescale the cached rects to the current bounds. While the user
-            // is dragging, this is a cheap per-tile multiply; after the
-            // debounced timer fires with a fresh layout, scale = 1 and we
-            // draw the pristine layout.
+            // Hit-test rects scaled into the current bounds. Cheap, O(n)
+            // once per frame. The Canvas itself is NOT rescaled — we draw it
+            // at `cachedLayoutSize` and use a GPU `scaleEffect` transform to
+            // stretch the flattened drawing group to the visible bounds.
             let rects = scaledRects(cachedRects,
                                     from: cachedLayoutSize,
                                     to: currentSize)
+            let scaleX = cachedLayoutSize.width > 0
+                ? currentSize.width / cachedLayoutSize.width
+                : 1
+            let scaleY = cachedLayoutSize.height > 0
+                ? currentSize.height / cachedLayoutSize.height
+                : 1
 
             // Highlight the union of every selected node's subtree (or the
             // node itself if a file). Walking parents per tile would be
@@ -217,26 +223,26 @@ struct TreemapView: View {
             // surrounding context when clicking a single tile.
             let dimMode = selectedNodes.contains { $0.isDirectory }
 
-            ZStack {
+            ZStack(alignment: .topLeading) {
+                // Base cushion layer: drawn at cachedLayoutSize and then
+                // stretched via .scaleEffect. The Canvas closure only
+                // re-runs when the cached layout (or selection / dim mode)
+                // changes — not on every resize frame.
                 Canvas(rendersAsynchronously: false) { ctx, size in
-                    // Solid dark backdrop so gaps read as separators.
                     ctx.fill(Path(CGRect(origin: .zero, size: size)),
                              with: .color(Color(red: 0.08, green: 0.08, blue: 0.10)))
 
-                    for tr in rects {
+                    for tr in cachedRects {
                         let inHighlight = !dimMode
                             || highlightSet.contains(ObjectIdentifier(tr.node))
                         drawCushion(ctx: &ctx, tr: tr, dimmed: !inHighlight)
                     }
 
-                    // Selection outlines. For each selected directory, draw
-                    // a single bounding box around its descendant tiles. For
-                    // each selected file, draw a per-tile outline.
                     let selectedIds = Set(selectedNodes.map { ObjectIdentifier($0) })
                     for sel in selectedNodes where sel.isDirectory {
                         let descIds = subtreeIds(of: sel)
                         var box: CGRect? = nil
-                        for tr in rects where descIds.contains(ObjectIdentifier(tr.node)) {
+                        for tr in cachedRects where descIds.contains(ObjectIdentifier(tr.node)) {
                             box = box?.union(tr.rect) ?? tr.rect
                         }
                         if let b = box {
@@ -246,7 +252,7 @@ struct TreemapView: View {
                             ctx.stroke(path, with: .color(.white), lineWidth: 1.5)
                         }
                     }
-                    for tr in rects where !tr.node.isDirectory
+                    for tr in cachedRects where !tr.node.isDirectory
                         && selectedIds.contains(ObjectIdentifier(tr.node)) {
                         let path = Path(roundedRect: tr.rect.insetBy(dx: 0.5, dy: 0.5),
                                         cornerRadius: 1)
@@ -254,7 +260,11 @@ struct TreemapView: View {
                         ctx.stroke(path, with: .color(.black), lineWidth: 0.5)
                     }
                 }
+                .frame(width: max(cachedLayoutSize.width, 1),
+                       height: max(cachedLayoutSize.height, 1))
                 .drawingGroup()
+                .scaleEffect(x: scaleX, y: scaleY, anchor: .topLeading)
+                .allowsHitTesting(false)
 
                 // Invisible hit layer: route clicks without re-laying out.
                 HitLayer(rects: rects,
@@ -364,7 +374,7 @@ struct TreemapView: View {
                 self.doLayout(size: size, root: root, token: token)
             }
             resizeDebounce = work
-            DispatchQueue.main.asyncAfter(deadline: .now() + 0.12,
+            DispatchQueue.main.asyncAfter(deadline: .now() + 1.0,
                                            execute: work)
         }
     }
