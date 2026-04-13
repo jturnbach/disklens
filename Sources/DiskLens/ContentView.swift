@@ -624,9 +624,15 @@ final class AppModel: ObservableObject {
     }
 
     private func captureVolumeInfo(scanRoot: URL) {
+        // We ask for the "important usage" free capacity (which folds in
+        // purgeable cache that macOS can evict on demand) — this matches
+        // what About This Mac shows. Falling back to the plain available
+        // capacity if the OS doesn't return the newer key.
         let keys: Set<URLResourceKey> = [
             .volumeURLKey, .volumeNameKey,
-            .volumeAvailableCapacityKey, .volumeTotalCapacityKey
+            .volumeAvailableCapacityKey,
+            .volumeAvailableCapacityForImportantUsageKey,
+            .volumeTotalCapacityKey
         ]
         guard let rv = try? scanRoot.resourceValues(forKeys: keys) else {
             scanRootIsVolume = false
@@ -634,7 +640,9 @@ final class AppModel: ObservableObject {
             return
         }
         volumeName = rv.volumeName
-        volumeFreeBytes = Int64(rv.volumeAvailableCapacity ?? 0)
+        let importantFree = rv.volumeAvailableCapacityForImportantUsage ?? 0
+        let plainFree = Int64(rv.volumeAvailableCapacity ?? 0)
+        volumeFreeBytes = importantFree > 0 ? Int64(importantFree) : plainFree
         volumeTotalBytes = Int64(rv.volumeTotalCapacity ?? 0)
         // Treat the scan root as a volume scan only if it is the volume's
         // mount point, not just some folder that happens to live on it.

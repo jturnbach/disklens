@@ -55,10 +55,16 @@ final class Scanner {
 
         while let dir = stack.popLast() {
             if cancelled { return }
+            // Intentionally NOT passing .skipsHiddenFiles. A disk usage
+            // analyzer must count dot-files and dot-directories: ~/.Trash,
+            // ~/.cache, ~/.npm, /.Trashes, /.fseventsd, /.Spotlight-V100,
+            // /.DocumentRevisions-V100, /.PKInstallSandboxManager-…, etc.
+            // are routinely several GB each and used to silently disappear
+            // into the "Unscanned" bucket.
             guard let items = try? fm.contentsOfDirectory(
                 at: dir.url,
                 includingPropertiesForKeys: keys,
-                options: [.skipsHiddenFiles]
+                options: []
             ) else { continue }
 
             for child in items {
