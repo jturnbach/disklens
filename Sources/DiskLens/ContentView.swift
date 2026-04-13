@@ -371,6 +371,37 @@ struct ContentView: View {
     @EnvironmentObject var model: AppModel
 
     var body: some View {
+        ZStack {
+            mainLayout
+            // Overlay (not sheet): keeps the window's traffic lights live
+            // so Cmd+W / red-button quit still work, and lets the AI setup
+            // sheet stack above it without modal-on-modal limitations.
+            if model.showWelcome {
+                Color.black.opacity(0.55)
+                    .ignoresSafeArea()
+                    .contentShape(Rectangle())
+                    .onTapGesture { /* swallow */ }
+                    .transition(.opacity)
+                WelcomeView()
+                    .environmentObject(model)
+                    .transition(.scale(scale: 0.96).combined(with: .opacity))
+                    .shadow(color: .black.opacity(0.5), radius: 30, y: 8)
+            }
+        }
+        .animation(.easeInOut(duration: 0.18), value: model.showWelcome)
+        .frame(minWidth: 1080, minHeight: 680)
+        .background(Color(nsColor: .windowBackgroundColor))
+        .sheet(isPresented: $model.showAISetup) {
+            AISetupView()
+                .environmentObject(model)
+        }
+        .sheet(isPresented: $model.showAIChat) {
+            AIChatView()
+                .environmentObject(model)
+        }
+    }
+
+    private var mainLayout: some View {
         VStack(spacing: 0) {
             Toolbar()
                 .environmentObject(model)
@@ -405,21 +436,6 @@ struct ContentView: View {
             }
             Divider()
             StatusBar()
-                .environmentObject(model)
-        }
-        .frame(minWidth: 1080, minHeight: 680)
-        .background(Color(nsColor: .windowBackgroundColor))
-        .sheet(isPresented: $model.showWelcome) {
-            WelcomeView()
-                .environmentObject(model)
-                .interactiveDismissDisabled(true)
-        }
-        .sheet(isPresented: $model.showAISetup) {
-            AISetupView()
-                .environmentObject(model)
-        }
-        .sheet(isPresented: $model.showAIChat) {
-            AIChatView()
                 .environmentObject(model)
         }
     }
