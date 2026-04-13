@@ -12,6 +12,11 @@ final class FileNode: Identifiable, Hashable {
     var totalSize: Int64 = 0
     var fileCount: Int = 0
     var dirCount: Int = 0
+    // Directory modification time recorded at scan time. On refresh we
+    // compare this against the current on-disk value — if unchanged, the
+    // directory's immediate children set is guaranteed unchanged and we
+    // can skip the readdir entirely.
+    var dirMtime: Date? = nil
 
     init(url: URL, name: String, isDirectory: Bool, parent: FileNode? = nil) {
         self.url = url

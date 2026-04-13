@@ -450,11 +450,38 @@ final class AppModel: ObservableObject {
         scanner.cancel()
     }
 
-    // Re-scan the root of the current scan (not the zoom target), picking
-    // up any on-disk changes and refreshing sizes and the treemap.
+    // Incremental refresh: walks the existing tree and only re-enumerates
+    // directories whose mtime changed. Unchanged subtrees skip the readdir
+    // entirely, so this is far cheaper than a fresh scan when most of the
+    // disk hasn't changed since the last scan.
     func rescan() {
-        guard let url = root?.url else { return }
-        startScan(url: url)
+        guard let r = root else { return }
+        isScanning = true
+        progressFiles = 0
+        progressBytes = 0
+        statusText = "Refreshing \(r.url.path)…"
+        scanner.refresh(root: r, progress: { [weak self] p in
+            guard let self else { return }
+            self.progressFiles = p.filesScanned
+            self.progressBytes = p.bytesScanned
+            self.progressPath = p.currentPath
+        }, completion: { [weak self] ok in
+            guard let self else { return }
+            self.isScanning = false
+            guard ok, let r = self.root else {
+                self.statusText = "Refresh cancelled."
+                return
+            }
+            self.legend = self.computeLegend(root: r)
+            self.captureVolumeInfo(scanRoot: r.url)
+            self.rebuildPathIndex()
+            // Prune any selected nodes that no longer exist in the tree.
+            self.selectedNodes = self.selectedNodes.filter { node in
+                self.pathIndex[node.url.path] === node
+            }
+            self.mutationToken += 1
+            self.statusText = "\(r.fileCount.formatted()) files · \(r.dirCount.formatted()) folders · \(ByteFormatter.string(r.totalSize)) — \(r.url.path)"
+        })
     }
 
     func zoomIn(_ node: FileNode) {
