@@ -303,14 +303,27 @@ struct AIChatView: View {
                     .frame(width: 22, height: 22)
                     .background(Circle().fill(Color.purple.opacity(0.18)))
             }
-            HStack(spacing: 4) {
-                ForEach(0..<3) { i in
-                    Circle()
-                        .fill(Color.secondary)
-                        .frame(width: 5, height: 5)
-                        .opacity(0.5)
+            // TimelineView(.animation) ticks at the display refresh rate,
+            // so each dot pulses smoothly with a phase offset instead of
+            // the old static dots. The sine wave gives the familiar
+            // "typing…" bounce without needing repeating Animation state.
+            TimelineView(.animation) { context in
+                let t = context.date.timeIntervalSinceReferenceDate
+                HStack(spacing: 5) {
+                    ForEach(0..<3, id: \.self) { i in
+                        let period: Double = 1.1
+                        let offset = Double(i) * 0.18
+                        let raw = (t + offset).truncatingRemainder(dividingBy: period) / period
+                        let wave = 0.5 + 0.5 * sin(raw * 2 * .pi)
+                        Circle()
+                            .fill(Color.secondary)
+                            .frame(width: 6, height: 6)
+                            .opacity(0.3 + 0.7 * wave)
+                            .scaleEffect(0.85 + 0.3 * wave)
+                    }
                 }
             }
+            .frame(width: 36, height: 12)
             .padding(.horizontal, 12)
             .padding(.vertical, 9)
             .background(
