@@ -556,6 +556,89 @@ final class AppModel: ObservableObject {
         return d
     }
 
+    // Permanent delete skips the Trash — calls FileManager.removeItem
+    // directly. Requires a stronger confirmation because nothing is
+    // recoverable from within the app.
+    func permanentlyDeleteSelection() {
+        let nodes = canonicalSelection().filter { $0 !== root }
+        guard !nodes.isEmpty else { NSSound.beep(); return }
+
+        let alert = NSAlert()
+        alert.alertStyle = .critical
+        let totalBytes = nodes.reduce(Int64(0)) { $0 + $1.totalSize }
+        if nodes.count == 1, let n = nodes.first {
+            alert.messageText = "Delete “\(n.name)” permanently?"
+            alert.informativeText = "\(ByteFormatter.string(n.totalSize)) will be erased immediately. This item will NOT be moved to the Trash and cannot be recovered from within DiskLens."
+        } else {
+            alert.messageText = "Delete \(nodes.count) items permanently?"
+            alert.informativeText = "\(ByteFormatter.string(totalBytes)) total. These items will NOT be moved to the Trash and cannot be recovered from within DiskLens."
+        }
+        alert.addButton(withTitle: "Delete Permanently")
+        alert.addButton(withTitle: "Cancel")
+        // Make the default (Return key) Cancel for safety.
+        alert.buttons.last?.keyEquivalent = "\r"
+        alert.buttons.first?.keyEquivalent = ""
+        if alert.runModal() != .alertFirstButtonReturn { return }
+
+        var failures: [(FileNode, Error)] = []
+        let ordered = nodes.sorted { depth($0) > depth($1) }
+        for n in ordered {
+            do {
+                try FileManager.default.removeItem(at: n.url)
+                removeNodeFromTree(n)
+            } catch {
+                failures.append((n, error))
+            }
+        }
+        if !failures.isEmpty {
+            let e = NSAlert()
+            e.messageText = "Could not delete \(failures.count) item\(failures.count == 1 ? "" : "s")"
+            e.informativeText = failures.prefix(5)
+                .map { "• \($0.0.name): \(friendlyTrashError($0.1, path: $0.0.url.path))" }
+                .joined(separator: "\n")
+            e.alertStyle = .critical
+            e.addButton(withTitle: "OK")
+            e.runModal()
+        }
+    }
+
+    func permanentlyDeleteSuggestion(messageID: UUID, suggestionID: UUID) {
+        guard let loc = findSuggestion(messageID: messageID, suggestionID: suggestionID) else { return }
+        var sug = aiMessages[loc.msgIdx].suggestions[loc.sugIdx]
+        guard let ref = sug.nodeRef,
+              let node = pathIndex[ref.path],
+              node !== root else {
+            sug.status = .failed("Not in current scan")
+            aiMessages[loc.msgIdx].suggestions[loc.sugIdx] = sug
+            return
+        }
+
+        if let reason = protectedPathReason(node.url.path) {
+            sug.status = .failed(reason)
+            aiMessages[loc.msgIdx].suggestions[loc.sugIdx] = sug
+            return
+        }
+
+        let alert = NSAlert()
+        alert.alertStyle = .critical
+        alert.messageText = "Delete “\(node.name)” permanently?"
+        alert.informativeText = "\(ByteFormatter.string(node.totalSize)) will be erased immediately. This item will NOT be moved to the Trash and cannot be recovered from within DiskLens."
+        alert.addButton(withTitle: "Delete Permanently")
+        alert.addButton(withTitle: "Cancel")
+        alert.buttons.last?.keyEquivalent = "\r"
+        alert.buttons.first?.keyEquivalent = ""
+        guard alert.runModal() == .alertFirstButtonReturn else { return }
+
+        do {
+            try FileManager.default.removeItem(at: node.url)
+            removeNodeFromTree(node)
+            sug.status = .deleted
+        } catch {
+            sug.status = .failed(friendlyTrashError(error, path: node.url.path))
+        }
+        aiMessages[loc.msgIdx].suggestions[loc.sugIdx] = sug
+    }
+
     func revealSelectionInFinder() {
         let urls = canonicalSelection().map { $0.url }
         guard !urls.isEmpty else { return }

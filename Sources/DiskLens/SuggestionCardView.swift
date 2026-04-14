@@ -235,16 +235,28 @@ struct SuggestionCardView: View {
                 .buttonStyle(.bordered)
                 .controlSize(.small)
 
-                Button {
-                    model.trashSuggestion(messageID: messageID,
-                                          suggestionID: sug.id)
+                // Split-menu delete: primary click moves to Trash
+                // (recoverable), click the chevron for Delete Permanently.
+                Menu {
+                    Button {
+                        model.permanentlyDeleteSuggestion(
+                            messageID: messageID, suggestionID: sug.id)
+                    } label: {
+                        Label("Delete Permanently…",
+                              systemImage: "xmark.bin.fill")
+                    }
                 } label: {
                     Label("Delete", systemImage: "trash")
                         .font(.system(size: 11, weight: .semibold))
+                } primaryAction: {
+                    model.trashSuggestion(messageID: messageID,
+                                          suggestionID: sug.id)
                 }
+                .menuStyle(.borderlessButton)
                 .buttonStyle(.borderedProminent)
                 .tint(.red)
                 .controlSize(.small)
+                .fixedSize()
             } else {
                 Text("Not found in current scan")
                     .font(.system(size: 10, weight: .medium))

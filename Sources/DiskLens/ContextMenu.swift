@@ -136,6 +136,16 @@ enum NodeContextMenu {
             model.moveSelectionToTrash()
         }
 
+        let permaTitle = isMulti
+            ? "Delete \(targets.count) Items Permanently…"
+            : "Delete Permanently…"
+        add(permaTitle, icon: "xmark.bin.fill", enabled: !isRoot) {
+            if !isInSelection {
+                model.selectedNodes = [node]
+            }
+            model.permanentlyDeleteSelection()
+        }
+
         return menu
     }
 

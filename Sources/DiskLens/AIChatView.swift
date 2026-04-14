@@ -224,21 +224,28 @@ struct AIChatView: View {
                         .background(Circle().fill(Color.purple.opacity(0.18)))
                 }
             }
-            VStack(alignment: .leading, spacing: 8) {
+            VStack(alignment: .leading, spacing: 10) {
                 if !m.content.isEmpty {
-                    renderedContent(m)
-                        .textSelection(.enabled)
-                        .padding(.horizontal, 12)
-                        .padding(.vertical, 9)
-                        .background(
-                            RoundedRectangle(cornerRadius: 11, style: .continuous)
-                                .fill(bubbleColor(m))
-                        )
-                        .overlay(
-                            RoundedRectangle(cornerRadius: 11, style: .continuous)
-                                .strokeBorder(Color.primary.opacity(0.06),
-                                              lineWidth: 0.5)
-                        )
+                    if m.role == .assistant {
+                        // Assistant: render block-level markdown directly
+                        // on the background — no bubble, no border.
+                        MarkdownView(markdown: m.content)
+                            .foregroundStyle(m.isError ? Color.red : Color.primary)
+                            .textSelection(.enabled)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                    } else {
+                        // User: keep the accent-color pill on the right.
+                        Text(m.content)
+                            .font(.system(size: 12.5))
+                            .foregroundStyle(.white)
+                            .textSelection(.enabled)
+                            .padding(.horizontal, 12)
+                            .padding(.vertical, 9)
+                            .background(
+                                RoundedRectangle(cornerRadius: 11, style: .continuous)
+                                    .fill(Color.accentColor)
+                            )
+                    }
                 }
                 if m.role == .assistant && !m.suggestions.isEmpty {
                     SuggestionCardView(messageID: m.id,
@@ -246,7 +253,7 @@ struct AIChatView: View {
                         .environmentObject(model)
                 }
             }
-            if m.role == .assistant { Spacer(minLength: 40) }
+            if m.role == .assistant { Spacer(minLength: 20) }
             if m.role == .user {
                 Image(systemName: "person.fill")
                     .font(.system(size: 11, weight: .semibold))
@@ -256,39 +263,6 @@ struct AIChatView: View {
                         Circle().fill(Color.accentColor)
                     )
             }
-        }
-    }
-
-    @ViewBuilder
-    private func renderedContent(_ m: ChatMessage) -> some View {
-        if m.role == .assistant {
-            // SwiftUI renders Markdown in Text initialized from
-            // AttributedString — gives bold paths, bullets, links for free.
-            if let attr = try? AttributedString(
-                markdown: m.content,
-                options: AttributedString.MarkdownParsingOptions(
-                    interpretedSyntax: .inlineOnlyPreservingWhitespace)) {
-                Text(attr)
-                    .font(.system(size: 12.5, design: .default))
-                    .foregroundStyle(m.isError ? Color.red : Color.primary)
-            } else {
-                Text(m.content)
-                    .font(.system(size: 12.5))
-                    .foregroundStyle(m.isError ? Color.red : Color.primary)
-            }
-        } else {
-            Text(m.content)
-                .font(.system(size: 12.5))
-                .foregroundStyle(.white)
-        }
-    }
-
-    private func bubbleColor(_ m: ChatMessage) -> Color {
-        if m.isError { return Color.red.opacity(0.18) }
-        switch m.role {
-        case .user:      return Color.accentColor
-        case .assistant: return Color(nsColor: .controlBackgroundColor)
-        case .system:    return Color.gray.opacity(0.2)
         }
     }
 
